@@ -1,18 +1,33 @@
-use std::{env, io::{Read, Write}, net::{TcpListener, TcpStream}, thread};
+use std::{env, net::{TcpListener, TcpStream}, thread};
 use anyhow::Result;
 
-fn handle_client(mut stream: TcpStream) -> Result<()> {
+use crate::modules::{parser::RedisParser, values::RedisValue};
+mod modules;
+
+fn handle_client(stream: TcpStream) -> Result<()> {
     println!("Incoming connection from: {}", stream.peer_addr()?);
-    let mut buffer = [0u8; 1024];
+    let mut parser = RedisParser::new(stream);
 
     loop {
-        let bytes_read = stream.read(&mut buffer)?;
-        if bytes_read == 0 {
-            println!("Client disconnected: {}", stream.peer_addr()?);
-            return Ok(())
+        match parser.read_value() {
+            Err(e) => {
+                println!("{}", e);
+                return Ok(())
+            },
+            Ok(value) => {
+                if let RedisValue::Array(arr) = value {
+                    if arr.len() == 0 {
+                        continue;
+                    }
+                    let command = arr[0].get_string()?.to_ascii_uppercase();
+                    match command.as_str() {
+                        "PING" => parser.send("+PONG\r\n".as_bytes())?,
+                        c => parser.send(&RedisValue::Error(format!("Err unknown command '{}'", c)).encode())?,
+                    }
+                    
+                }
+            },
         }
-        let _line = String::from_utf8(buffer[..bytes_read].to_vec())?;
-        stream.write("+PONG\r\n".as_bytes())?;
     }
 }
 
