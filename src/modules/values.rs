@@ -35,4 +35,16 @@ impl RedisValue {
         }
         encoded
     }
+    pub fn as_simple_string(&self) -> Result<Vec<u8>> {
+        if let Self::String(s) = self {
+            let mut encoded = vec![];
+            let content = s.as_bytes().to_vec();
+            encoded.push(b'+');
+            encoded.extend(content);
+            encoded.extend("\r\n".as_bytes());
+            Ok(encoded)
+        } else {
+            Err(anyhow!("Value type is not a string."))
+        }
+    }
 }
