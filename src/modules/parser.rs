@@ -45,29 +45,43 @@ impl RedisParser {
         self.stream.write_all(content).await?;
         Ok(())
     }
-    fn read_blob<'a>(&mut self) -> BoxFuture<'_, Result<Vec<u8>>> {
-        Box::pin(async move {
-            match self.buffer[..self.position].iter().position(|c| *c == b'\r') {
+    async fn read_blob(&mut self) -> Result<Vec<u8>> {
+        loop {
+            // Look for \r in the part of the buffer we've filled so far
+            let maybe_cr = self.buffer[..self.position].iter().position(|c| *c == b'\r');
+            match maybe_cr {
                 None => {
+                    // no \r yet -> read more data
                     let nread = self.stream.read(&mut self.buffer[self.position..]).await?;
                     if nread == 0 {
                         return Err(anyhow!("Client disconnected."))
                     }
                     self.position += nread;
-                    self.read_blob().await
                 },
                 Some(p) => {
+                    // \r found, now looking for \n
+                    if p+1 >= self.position {
+                        // \r is at the end of read data so lets get more bytes
+                        let nread = self.stream.read(&mut self.buffer[self.position..]).await?;
+                        if nread == 0 {
+                            return Err(anyhow!("Client disconnected."))
+                        }
+                        self.position += nread;
+                        continue;
+                    }
+
+                    // check next byte for \n
                     if self.buffer[p+1] != b'\n' {
-                        self.read_blob().await
+                        continue;
                     } else {
                         let blob = self.buffer[..(p+2)].to_vec();
                         self.buffer.copy_within(p+2..self.position, 0);
                         self.position = max(self.position - (p + 2), 0);
-                        Ok(blob)
+                        return Ok(blob)
                     }
                 }
-            }
-        })
+            };
+        }
     }
     async fn simple_string(&mut self) -> Result<RedisValue> {
         let blob = self.read_blob().await?;
