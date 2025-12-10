@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow};
 #[derive(Debug, Clone)]
 pub enum RedisValue {
     String(String),
-    _Int(i64),
+    Int(i64),
     Array(Vec<RedisValue>),
     Error(String),
     Null,
@@ -35,8 +35,16 @@ impl RedisValue {
             },
             Self::Null => {
                 encoded.extend(b"$-1\r\n");
-            }
-            _ => (),
+            },
+            Self::Int(i) => {
+                encoded.extend(format!(":{}\r\n", i).as_bytes());
+            },
+            Self::Array(values) => {
+                encoded.extend(format!("*{}\r\n", values.len()).as_bytes());
+                for value in values {
+                    encoded.extend(value.encode());
+                }
+            },
         }
         encoded
     }

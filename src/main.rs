@@ -5,8 +5,6 @@ use tokio::{net::{TcpListener, TcpStream}, signal, sync::RwLock, task::JoinSet};
 use crate::modules::{parser::RedisParser, values::RedisValue};
 mod modules;
 
-type Db = Arc<RwLock<HashMap<String, DbRecord>>>;
-
 struct DbRecord {
     value: RedisValue,
     time_limit: Option<DateTime<Utc>>,
@@ -32,10 +30,20 @@ impl DbRecord {
     }
 }
 
+struct Registry {
+    channels: HashMap<String, Vec<u32>>,
+    subscriptions: HashMap<u32, Vec<String>>,
+}
+
+impl Registry {
+    fn new() -> Self {
+        Self { channels: HashMap::new(), subscriptions: HashMap::new() }
+    }
+}
 
 
 
-async fn handle_client_async(stream: TcpStream, db: Arc<RwLock<HashMap<String, DbRecord>>>) -> Result<()> {
+async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashMap<String, DbRecord>>>, ps_registry: Arc<RwLock<Registry>>) -> Result<()> {
     println!("Incoming connection from: {}", stream.peer_addr()?);
     let mut parser = RedisParser::new(stream);
 
@@ -112,6 +120,33 @@ async fn handle_client_async(stream: TcpStream, db: Arc<RwLock<HashMap<String, D
                                 }
                             }
                         },
+                        "SUBSCRIBE" =>  {
+                            if args.len() != 2 {
+                                RedisValue::Error("Err wrong number of arguments for 'ECHO' command".to_string()).encode()
+                            } else {
+                                let channel = args[1].get_string()?;
+                                {
+                                    let mut reg = ps_registry.write().await;
+                                    if reg.channels.contains_key(&channel) {
+                                        reg.channels.get_mut(&channel).unwrap().push(my_id);
+                                    } else {
+                                        reg.channels.insert(channel.clone(), vec![my_id]);
+                                    }
+                                    if reg.subscriptions.contains_key(&my_id) {
+                                        reg.subscriptions.get_mut(&my_id).unwrap().push(channel.clone());
+                                    } else {
+                                        reg.subscriptions.insert(my_id, vec![channel.clone()]);
+                                    }
+                                }
+                                let reg = ps_registry.read().await;
+                                let current_subscriptions = reg.subscriptions.get(&my_id).unwrap().len();
+                                let mut response = vec![];
+                                response.push(RedisValue::String("subscribe".to_string()));
+                                response.push(RedisValue::String(channel));
+                                response.push(RedisValue::Int(current_subscriptions as i64));
+                                RedisValue::Array(response).encode()
+                            }
+                        }
                         c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
                     };
                     parser.send(&response).await?;
@@ -131,9 +166,12 @@ async fn main() -> Result<()> {
     println!("Listening on 127.0.0.1:{}", port);
 
     let mut handles = JoinSet::new();
-    let db: Db = Arc::new(RwLock::new(HashMap::new()));
+    let db = Arc::new(RwLock::new(HashMap::new()));
+    let ps_registry = Arc::new(RwLock::new(Registry::new()));
     let ctrl_c_signal = signal::ctrl_c();
     tokio::pin!(ctrl_c_signal);
+
+    let mut current_thread_id = 0u32;
 
     loop {
         tokio::select! {
@@ -147,11 +185,13 @@ async fn main() -> Result<()> {
                     Ok((stream, addr)) => {
                         println!("Accepted connection from {}", addr);
                         let db = Arc::clone(&db);
+                        let ps_registry = Arc::clone(&ps_registry);
                         handles.spawn(async move {
-                            if let Err(e) = handle_client_async(stream, db).await {
+                            if let Err(e) = handle_client_async(current_thread_id, stream, db, ps_registry).await {
                                 eprintln!("Error handling client: {}", e);
                             }
                         });
+                        current_thread_id += 1;
                     },
                     Err(e) => {
                         eprintln!("error accepting connection: {}", e);
