@@ -69,7 +69,16 @@ async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashM
                         continue;
                     }
                     let response = match command.as_str() {
-                        "PING" => RedisValue::String("PONG".to_string()).as_simple_string()?,
+                        "PING" =>  {
+                            if subscribe_mode {
+                                let mut response = vec![];
+                                response.push(RedisValue::String("pong".to_string()));
+                                response.push(RedisValue::String("".to_string()));
+                                RedisValue::Array(response).encode()
+                            } else {
+                                RedisValue::String("PONG".to_string()).as_simple_string()?
+                            }
+                        },
                         "ECHO" => {
                             if args.len() != 2 {
                                 RedisValue::Error("Err wrong number of arguments for 'ECHO' command".to_string()).encode()
