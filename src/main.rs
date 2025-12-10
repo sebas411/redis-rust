@@ -1,12 +1,41 @@
 use std::{collections::HashMap, env, sync::Arc};
 use anyhow::Result;
+use chrono::{DateTime, TimeDelta, Utc};
 use tokio::{net::{TcpListener, TcpStream}, signal, sync::RwLock, task::JoinSet};
 use crate::modules::{parser::RedisParser, values::RedisValue};
 mod modules;
 
-type Db = Arc<RwLock<HashMap<String, RedisValue>>>;
+type Db = Arc<RwLock<HashMap<String, DbRecord>>>;
 
-async fn handle_client_async(stream: TcpStream, db: Db) -> Result<()> {
+struct DbRecord {
+    value: RedisValue,
+    time_limit: Option<DateTime<Utc>>,
+}
+
+impl DbRecord {
+    fn new(value: RedisValue) -> Self {
+        Self { value, time_limit: None }
+    }
+
+    fn new_with_limit(value: RedisValue, limit: DateTime<Utc>) -> Self {
+        Self { value, time_limit: Some(limit) }
+    }
+
+    fn is_valid(&self) -> bool {
+        if let Some(limit) = self.time_limit {
+            let now = Utc::now();
+            if now >= limit {
+                return false
+            }
+        }
+        true
+    }
+}
+
+
+
+
+async fn handle_client_async(stream: TcpStream, db: Arc<RwLock<HashMap<String, DbRecord>>>) -> Result<()> {
     println!("Incoming connection from: {}", stream.peer_addr()?);
     let mut parser = RedisParser::new(stream);
 
@@ -32,16 +61,34 @@ async fn handle_client_async(stream: TcpStream, db: Db) -> Result<()> {
                             }
                         },
                         "SET" => {
-                            if args.len() != 3 {
+                            if args.len() < 3 {
                                 RedisValue::Error("Err wrong number of arguments for 'ECHO' command".to_string()).encode()
                             } else {
                                 let key = args[1].clone().get_string()?;
                                 let value = args[2].clone();
+                                let record;
+                                if args.len() > 4 && args[3].get_string()?.to_uppercase() == "PX" {
+                                    let milliseconds_limit = usize::from_str_radix(args[4].get_string()?.as_str(), 10)?;
+                                    let now = Utc::now();
+                                    let delta = TimeDelta::milliseconds(milliseconds_limit as i64);
+                                    let limit = now.checked_add_signed(delta).unwrap();
+                                    record = DbRecord::new_with_limit(value, limit);
+                                } else if args.len() > 4 && args[3].get_string()?.to_uppercase() == "EX" {
+                                    let seconds_limit = usize::from_str_radix(args[4].get_string()?.as_str(), 10)?;
+                                    let now = Utc::now();
+                                    let delta = TimeDelta::seconds(seconds_limit as i64);
+                                    let limit = now.checked_add_signed(delta).unwrap();
+                                    record = DbRecord::new_with_limit(value, limit);
+                                } else {
+                                    record = DbRecord::new(value);
+                                }
                                 {
                                     let mut map = db.write().await;
-                                    map.insert(key, value);
+                                    map.insert(key, record);
                                 }
                                 RedisValue::String("OK".to_string()).as_simple_string()?
+
+                                
                             }
                         },
                         "GET" => {
@@ -50,10 +97,14 @@ async fn handle_client_async(stream: TcpStream, db: Db) -> Result<()> {
                             } else {
                                 let key = args[1].clone().get_string()?;
                                 let map = db.read().await;
-                                let value = map.get(&key);
-                                match value {
-                                    Some(value) => {
-                                        value.encode()
+                                let record = map.get(&key);
+                                match record {
+                                    Some(record) => {
+                                        if record.is_valid() {
+                                            record.value.encode()
+                                        } else {
+                                            RedisValue::Null.encode()
+                                        }
                                     },
                                     None => {
                                         RedisValue::Null.encode()
