@@ -165,7 +165,22 @@ async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashM
                                 response.push(RedisValue::Int(current_subscriptions as i64));
                                 RedisValue::Array(response).encode()
                             }
-                        }
+                        },
+                        "PUBLISH" => {
+                            if args.len() != 3 {
+                                RedisValue::Error("Err wrong number of arguments for 'PUBLISH' command".to_string()).encode()
+                            } else {
+                                let channel = args[1].get_string()?;
+                                let reg = ps_registry.read().await;
+                                let current_subscribers;
+                                if reg.channels.contains_key(&channel) {
+                                    current_subscribers = reg.channels.get(&channel).unwrap().len();
+                                } else {
+                                    current_subscribers = 0
+                                }
+                                RedisValue::Int(current_subscribers as i64).encode()
+                            }
+                        },
                         c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
                     };
                     parser.send(&response).await?;
