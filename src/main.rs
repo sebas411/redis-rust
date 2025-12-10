@@ -1,9 +1,11 @@
-use std::{collections::HashMap, env, sync::Arc};
+use std::{collections::{HashMap, HashSet}, env, sync::Arc};
 use anyhow::Result;
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::{net::{TcpListener, TcpStream}, signal, sync::RwLock, task::JoinSet};
 use crate::modules::{parser::RedisParser, values::RedisValue};
 mod modules;
+
+const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 
 struct DbRecord {
     value: RedisValue,
@@ -31,8 +33,8 @@ impl DbRecord {
 }
 
 struct Registry {
-    channels: HashMap<String, Vec<u32>>,
-    subscriptions: HashMap<u32, Vec<String>>,
+    channels: HashMap<String, HashSet<u32>>,
+    subscriptions: HashMap<u32, HashSet<String>>,
 }
 
 impl Registry {
@@ -46,6 +48,7 @@ impl Registry {
 async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashMap<String, DbRecord>>>, ps_registry: Arc<RwLock<Registry>>) -> Result<()> {
     println!("Incoming connection from: {}", stream.peer_addr()?);
     let mut parser = RedisParser::new(stream);
+    let mut subscribe_mode = false;
 
     loop {
         match parser.read_value().await {
@@ -59,6 +62,12 @@ async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashM
                         continue;
                     }
                     let command = args[0].get_string()?.to_ascii_uppercase();
+
+                    if subscribe_mode && !SUBSCRIBE_MODE_COMMANDS.contains(&command.as_str()) {
+                        let response = RedisValue::Error(format!("ERR Can't execute '{}' in subscribed mode", command)).encode();
+                        parser.send(&response).await?;
+                        continue;
+                    }
                     let response = match command.as_str() {
                         "PING" => RedisValue::String("PONG".to_string()).as_simple_string()?,
                         "ECHO" => {
@@ -70,7 +79,7 @@ async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashM
                         },
                         "SET" => {
                             if args.len() < 3 {
-                                RedisValue::Error("Err wrong number of arguments for 'ECHO' command".to_string()).encode()
+                                RedisValue::Error("Err wrong number of arguments for 'SET' command".to_string()).encode()
                             } else {
                                 let key = args[1].clone().get_string()?;
                                 let value = args[2].clone();
@@ -101,7 +110,7 @@ async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashM
                         },
                         "GET" => {
                             if args.len() != 2 {
-                                RedisValue::Error("Err wrong number of arguments for 'ECHO' command".to_string()).encode()
+                                RedisValue::Error("Err wrong number of arguments for 'GET' command".to_string()).encode()
                             } else {
                                 let key = args[1].clone().get_string()?;
                                 let map = db.read().await;
@@ -122,24 +131,25 @@ async fn handle_client_async(my_id: u32, stream: TcpStream, db: Arc<RwLock<HashM
                         },
                         "SUBSCRIBE" =>  {
                             if args.len() != 2 {
-                                RedisValue::Error("Err wrong number of arguments for 'ECHO' command".to_string()).encode()
+                                RedisValue::Error("Err wrong number of arguments for 'SUBSCRIBE' command".to_string()).encode()
                             } else {
                                 let channel = args[1].get_string()?;
                                 {
                                     let mut reg = ps_registry.write().await;
                                     if reg.channels.contains_key(&channel) {
-                                        reg.channels.get_mut(&channel).unwrap().push(my_id);
+                                        reg.channels.get_mut(&channel).unwrap().insert(my_id);
                                     } else {
-                                        reg.channels.insert(channel.clone(), vec![my_id]);
+                                        reg.channels.insert(channel.clone(), HashSet::from([my_id]));
                                     }
                                     if reg.subscriptions.contains_key(&my_id) {
-                                        reg.subscriptions.get_mut(&my_id).unwrap().push(channel.clone());
+                                        reg.subscriptions.get_mut(&my_id).unwrap().insert(channel.clone());
                                     } else {
-                                        reg.subscriptions.insert(my_id, vec![channel.clone()]);
+                                        reg.subscriptions.insert(my_id, HashSet::from([channel.clone()]));
                                     }
                                 }
                                 let reg = ps_registry.read().await;
                                 let current_subscriptions = reg.subscriptions.get(&my_id).unwrap().len();
+                                subscribe_mode = true;
                                 let mut response = vec![];
                                 response.push(RedisValue::String("subscribe".to_string()));
                                 response.push(RedisValue::String(channel));
