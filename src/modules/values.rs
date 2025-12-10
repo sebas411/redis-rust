@@ -1,10 +1,12 @@
 use anyhow::{Result, anyhow};
 
+#[derive(Debug, Clone)]
 pub enum RedisValue {
     String(String),
     _Int(i64),
     Array(Vec<RedisValue>),
     Error(String),
+    Null,
 }
 
 impl RedisValue {
@@ -31,6 +33,9 @@ impl RedisValue {
                 encoded.extend(content);
                 encoded.extend("\r\n".as_bytes());
             },
+            Self::Null => {
+                encoded.extend(b"$-1\r\n");
+            }
             _ => (),
         }
         encoded
