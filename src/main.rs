@@ -1,8 +1,8 @@
-use std::{collections::{HashMap}, env, sync::Arc};
+use std::{env, sync::Arc};
 use anyhow::Result;
 use tokio::{net::TcpListener, signal, sync::{RwLock, mpsc::unbounded_channel}, task::JoinSet};
 
-use crate::modules::client_handler::{ClientHandler, Registry};
+use crate::modules::client_handler::{ClientHandler, DB, Registry};
 mod modules;
 
 
@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     println!("Listening on 127.0.0.1:{}", port);
 
     let mut handles = JoinSet::new();
-    let db = Arc::new(RwLock::new(HashMap::new()));
+    let db = Arc::new(RwLock::new(DB::new()));
     let ps_registry = Arc::new(RwLock::new(Registry::new()));
     let ctrl_c_signal = signal::ctrl_c();
     tokio::pin!(ctrl_c_signal);

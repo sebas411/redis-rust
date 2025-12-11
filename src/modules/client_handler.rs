@@ -46,14 +46,25 @@ impl Registry {
 
 pub struct ClientHandler {
     id: u32,
-    db: Arc<RwLock<HashMap<String, DbRecord>>>,
+    db: Arc<RwLock<DB>>,
     ps_registry: Arc<RwLock<Registry>>,
     receiver: UnboundedReceiver<Vec<u8>>,
     subscribe_mode: bool,
 }
 
+pub struct DB {
+    kv_db: HashMap<String, DbRecord>,
+    list_db: HashMap<String, Vec<String>>,
+}
+
+impl DB {
+    pub fn new() -> Self {
+        Self { kv_db: HashMap::new(), list_db: HashMap::new() }
+    }
+}
+
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<HashMap<String, DbRecord>>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>) -> Self {
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>) -> Self {
         Self { id, db, ps_registry, receiver, subscribe_mode: false }
     }
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
@@ -140,8 +151,8 @@ impl ClientHandler {
                         record = DbRecord::new(value);
                     }
                     {
-                        let mut map = self.db.write().await;
-                        map.insert(key, record);
+                        let mut w_db = self.db.write().await;
+                        w_db.kv_db.insert(key, record);
                     }
                     RedisValue::String("OK".to_string()).as_simple_string()?
 
@@ -153,7 +164,8 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'GET' command".to_string()).encode()
                 } else {
                     let key = args[1].clone().get_string()?;
-                    let map = self.db.read().await;
+                    let r_db = self.db.read().await;
+                    let map = &r_db.kv_db;
                     let record = map.get(&key);
                     match record {
                         Some(record) => {
@@ -176,15 +188,21 @@ impl ClientHandler {
                     let channel = args[1].get_string()?;
                     {
                         let mut reg = self.ps_registry.write().await;
-                        if reg.channels.contains_key(&channel) {
-                            reg.channels.get_mut(&channel).unwrap().insert(self.id);
-                        } else {
-                            reg.channels.insert(channel.clone(), HashSet::from([self.id]));
+                        match reg.channels.get_mut(&channel) {
+                            Some(map) => {
+                                map.insert(self.id);
+                            },
+                            None => {
+                                reg.channels.insert(channel.clone(), HashSet::from([self.id]));
+                            }
                         }
-                        if reg.subscriptions.contains_key(&self.id) {
-                            reg.subscriptions.get_mut(&self.id).unwrap().insert(channel.clone());
-                        } else {
-                            reg.subscriptions.insert(self.id, HashSet::from([channel.clone()]));
+                        match reg.subscriptions.get_mut(&self.id) {
+                            Some(map) => {
+                                map.insert(channel.clone());
+                            },
+                            None => {
+                                reg.subscriptions.insert(self.id, HashSet::from([channel.clone()]));
+                            }
                         }
                     }
                     let reg = self.ps_registry.read().await;
@@ -224,16 +242,16 @@ impl ClientHandler {
             },
             "UNSUBSCRIBE" => {
                 if args.len() != 2 {
-                    RedisValue::Error("Err wrong number of arguments for 'PUBLISH' command".to_string()).encode()
+                    RedisValue::Error("Err wrong number of arguments for 'UNSUBSCRIBE' command".to_string()).encode()
                 } else {
                     let channel = args[1].get_string()?;
                     {
                         let mut reg = self.ps_registry.write().await;
-                        if reg.channels.contains_key(&channel) {
-                            reg.channels.get_mut(&channel).unwrap().remove(&self.id);
+                        if let Some(map) = reg.channels.get_mut(&channel) {
+                            map.remove(&self.id);
                         }
-                        if reg.subscriptions.contains_key(&self.id) {
-                            reg.subscriptions.get_mut(&self.id).unwrap().remove(&channel);
+                        if let Some(map) = reg.subscriptions.get_mut(&self.id) {
+                            map.remove(&channel);
                         }
                     }
                     let reg = self.ps_registry.read().await;
@@ -248,6 +266,31 @@ impl ClientHandler {
                     RedisValue::Array(response).encode()
                 }
             },
+            "RPUSH" => {
+                if args.len() < 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'RPUSH' command".to_string()).encode()
+                } else {
+                    let list_name = args[1].get_string()?;
+                    let mut values = vec![];
+                    for val in args.iter().skip(2) {
+                        values.push(val.get_string()?);
+                    }
+                    {
+                        let mut reg = self.db.write().await;
+                        match reg.list_db.get_mut(&list_name) {
+                            Some(list) => {
+                                list.extend(values);
+                            },
+                            None => {
+                                reg.list_db.insert(list_name.clone(), values);
+                            }
+                        }
+                    }
+                    let reg = self.db.read().await;
+                    let records = reg.list_db.get(&list_name).unwrap().len();
+                    RedisValue::Int(records as i64).encode()
+                }
+            }
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
