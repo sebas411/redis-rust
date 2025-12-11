@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet}, sync::Arc};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}}};
@@ -290,7 +290,40 @@ impl ClientHandler {
                     let records = reg.list_db.get(&list_name).unwrap().len();
                     RedisValue::Int(records as i64).encode()
                 }
-            }
+            },
+            "LRANGE" => {
+                if args.len() != 4 {
+                    RedisValue::Error("Err wrong number of arguments for 'LRANGE' command".to_string()).encode()
+                } else {
+                    let list_name = args[1].get_string()?;
+                    let start_string = args[2].get_string()?;
+                    let stop_string = args[3].get_string()?;
+
+                    let mut start = i64::from_str_radix(&start_string, 10)?;
+                    let mut stop = i64::from_str_radix(&stop_string, 10)?;
+
+                    let reg = self.db.read().await;
+                    let list = reg.list_db.get(&list_name).unwrap_or(&vec![]).to_owned();
+                    let list_len = list.len() as i64;
+
+                    if start < 0 { start = max(list_len - start, 0) }
+                    if stop < 0 { stop = max(list_len - stop, 0)}
+                    stop = min(stop, list_len - 1);
+
+                    let start = start as usize;
+                    let stop = stop as usize;
+
+                    let mut return_list = vec![];
+
+                    if start < list.len() && start <= stop {
+                        for item in list[start..=stop].iter() {
+                            return_list.push(RedisValue::String(item.clone()));
+                        }
+                    }
+
+                    RedisValue::Array(return_list) .encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)

@@ -37,6 +37,7 @@ impl RedisParser {
                 b'+' => self.simple_string().await,
                 b'*' => self.array().await,
                 b'$' => self.bulk_string().await,
+                b':' => self.integer().await,
                 _ => Err(anyhow!("Unrecognized value start {}", self.buffer[0]))
             }
         })
@@ -86,6 +87,13 @@ impl RedisParser {
     async fn simple_string(&mut self) -> Result<RedisValue> {
         let blob = self.read_blob().await?;
         Ok(RedisValue::String(String::from_utf8(blob[1..blob.len()-2].to_vec())?))
+    }
+    async fn integer(&mut self) -> Result<RedisValue> {
+        let blob = self.read_blob().await?;
+        let number_string = String::from_utf8(blob[1..blob.len()-2].to_vec())?;
+        let number = i64::from_str_radix(&number_string, 10)?;
+        
+        Ok(RedisValue::Int(number))
     }
     async fn bulk_string(&mut self) -> Result<RedisValue> {
         let blob = self.read_blob().await?;

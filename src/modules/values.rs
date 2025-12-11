@@ -17,6 +17,13 @@ impl RedisValue {
             Err(anyhow!("Value is not a string."))
         }
     }
+    pub fn _get_int(&self) -> Result<i64> {
+        if let Self::Int(i) = self {
+            Ok(*i)
+        } else {
+            Err(anyhow!("Value is not an integer."))
+        }
+    }
     pub fn encode(&self) -> Vec<u8> {
         let mut encoded = vec![];
         match self {
