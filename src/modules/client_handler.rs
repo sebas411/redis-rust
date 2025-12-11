@@ -324,6 +324,29 @@ impl ClientHandler {
                     RedisValue::Array(return_list) .encode()
                 }
             },
+            "LPUSH" => {
+                if args.len() < 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'LPUSH' command".to_string()).encode()
+                } else {
+                    let list_name = args[1].get_string()?;
+                    let mut values = vec![];
+                    for val in args.iter().skip(2) {
+                        values.push(val.get_string()?);
+                    }
+                    values.reverse();
+                    {
+                        let reg = self.db.read().await;
+                        let current_list = reg.list_db.get(&list_name).unwrap_or(&vec![]).clone();
+                        values.extend(current_list);
+                    }
+                    let records = values.len();
+                    {
+                        let mut reg = self.db.write().await;
+                        reg.list_db.insert(list_name.clone(), values);
+                    }
+                    RedisValue::Int(records as i64).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
