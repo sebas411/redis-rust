@@ -306,8 +306,8 @@ impl ClientHandler {
                     let list = reg.list_db.get(&list_name).unwrap_or(&vec![]).to_owned();
                     let list_len = list.len() as i64;
 
-                    if start < 0 { start = max(list_len - start, 0) }
-                    if stop < 0 { stop = max(list_len - stop, 0)}
+                    if start < 0 { start = max(list_len + start, 0) }
+                    if stop < 0 { stop = max(list_len + stop, 0)}
                     stop = min(stop, list_len - 1);
 
                     let start = start as usize;
