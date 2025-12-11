@@ -222,6 +222,32 @@ impl ClientHandler {
                     RedisValue::Int(current_subscriber_num as i64).encode()
                 }
             },
+            "UNSUBSCRIBE" => {
+                if args.len() != 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'PUBLISH' command".to_string()).encode()
+                } else {
+                    let channel = args[1].get_string()?;
+                    {
+                        let mut reg = self.ps_registry.write().await;
+                        if reg.channels.contains_key(&channel) {
+                            reg.channels.get_mut(&channel).unwrap().remove(&self.id);
+                        }
+                        if reg.subscriptions.contains_key(&self.id) {
+                            reg.subscriptions.get_mut(&self.id).unwrap().remove(&channel);
+                        }
+                    }
+                    let reg = self.ps_registry.read().await;
+                    let current_subscriptions = reg.subscriptions.get(&self.id).unwrap().len();
+                    if current_subscriptions == 0 {
+                        self.subscribe_mode = false;
+                    }
+                    let mut response = vec![];
+                    response.push(RedisValue::String("unsubscribe".to_string()));
+                    response.push(RedisValue::String(channel));
+                    response.push(RedisValue::Int(current_subscriptions as i64));
+                    RedisValue::Array(response).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
