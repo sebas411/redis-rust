@@ -356,6 +356,29 @@ impl ClientHandler {
                     RedisValue::Int(list_len as i64).encode()
                 }
             },
+            "LPOP" => {
+                if args.len() < 2 || args.len() > 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'LPOP' command".to_string()).encode()
+                } else {
+                    let list_name = args[1].get_string()?;
+                    let pop_amount = if args.len() == 3 { usize::from_str_radix(&args[2].get_string()?, 10)? } else { 1 };
+                    let mut returned_items = vec![];
+                    {
+                        let mut reg = self.db.write().await;
+                        if let Some(list) = reg.list_db.get_mut(&list_name) {
+                            for _ in 0..pop_amount {
+                                let popped = list.remove(0);
+                                returned_items.push(RedisValue::String(popped));
+                            }
+                        }
+                    }
+                    if pop_amount == 1 {
+                        returned_items[0].encode()
+                    } else {
+                        RedisValue::Array(returned_items).encode()
+                    }
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
