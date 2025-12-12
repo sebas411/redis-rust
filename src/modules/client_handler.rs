@@ -347,6 +347,15 @@ impl ClientHandler {
                     RedisValue::Int(records as i64).encode()
                 }
             },
+            "LLEN" => {
+                if args.len() != 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'LLEN' command".to_string()).encode()
+                } else {
+                    let list_name = args[1].get_string()?;
+                    let list_len = self.db.read().await.list_db.get(&list_name).unwrap_or(&vec![]).len();
+                    RedisValue::Int(list_len as i64).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
