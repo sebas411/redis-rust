@@ -6,7 +6,8 @@ pub enum RedisValue {
     Int(i64),
     Array(Vec<RedisValue>),
     Error(String),
-    Null,
+    NullString,
+    NullArray,
 }
 
 impl RedisValue {
@@ -40,9 +41,12 @@ impl RedisValue {
                 encoded.extend(content);
                 encoded.extend("\r\n".as_bytes());
             },
-            Self::Null => {
+            Self::NullString => {
                 encoded.extend(b"$-1\r\n");
             },
+            Self::NullArray => {
+                encoded.extend(b"*-1\r\n");
+            }
             Self::Int(i) => {
                 encoded.extend(format!(":{}\r\n", i).as_bytes());
             },

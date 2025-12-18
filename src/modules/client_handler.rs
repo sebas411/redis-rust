@@ -1,7 +1,7 @@
-use std::{cmp::{max, min}, collections::{HashMap, HashSet}, sync::Arc};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeDelta, Utc};
-use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender}}};
+use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
 use crate::modules::{parser::RedisParser, values::RedisValue};
 
@@ -32,6 +32,58 @@ impl DbRecord {
     }
 }
 
+pub struct DbListRecord {
+    list: VecDeque<String>,
+    waiters: VecDeque<UnboundedSender<String>>
+}
+
+impl DbListRecord {
+    fn new() -> Self {
+        Self { list: VecDeque::new(), waiters: VecDeque::new() }
+    }
+    fn from_list(list: VecDeque<String>) -> Self {
+        Self { list, waiters: VecDeque::new() }
+    }
+    fn push_front(&mut self, value: String) {
+        if !self.waiters.is_empty() {
+            let waiter = self.waiters.pop_front().unwrap();
+            let mut result = waiter.send(value.clone());
+            while result.is_err() {
+                if self.waiters.is_empty() {
+                    self.list.push_front(value);
+                    return;
+                }
+                let waiter = self.waiters.pop_front().unwrap();
+                result = waiter.send(value.clone());
+            }
+        } else {
+            self.list.push_front(value);
+        }
+    }
+    fn push_back(&mut self, value: String) {
+        if !self.waiters.is_empty() {
+            let waiter = self.waiters.pop_front().unwrap();
+            let mut result = waiter.send(value.clone());
+            while result.is_err() {
+                if self.waiters.is_empty() {
+                    self.list.push_back(value);
+                    return;
+                }
+                let waiter = self.waiters.pop_front().unwrap();
+                result = waiter.send(value.clone());
+            }
+        } else {
+            self.list.push_back(value);
+        }
+    }
+    fn pop_front(&mut self) -> Option<String> {
+        self.list.pop_front()
+    }
+    fn subscribe_waiter(&mut self, waiter: UnboundedSender<String>) {
+        self.waiters.push_back(waiter);
+    }
+}
+
 pub struct Registry {
     channels: HashMap<String, HashSet<u32>>,
     subscriptions: HashMap<u32, HashSet<String>>,
@@ -54,7 +106,7 @@ pub struct ClientHandler {
 
 pub struct DB {
     kv_db: HashMap<String, DbRecord>,
-    list_db: HashMap<String, Vec<String>>,
+    list_db: HashMap<String, DbListRecord>,
 }
 
 impl DB {
@@ -172,11 +224,11 @@ impl ClientHandler {
                             if record.is_valid() {
                                 record.value.encode()
                             } else {
-                                RedisValue::Null.encode()
+                                RedisValue::NullString.encode()
                             }
                         },
                         None => {
-                            RedisValue::Null.encode()
+                            RedisValue::NullString.encode()
                         }
                     }
                 }
@@ -271,24 +323,28 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'RPUSH' command".to_string()).encode()
                 } else {
                     let list_name = args[1].get_string()?;
-                    let mut values = vec![];
-                    for val in args.iter().skip(2) {
-                        values.push(val.get_string()?);
-                    }
+                    let prev_records;
+                    let pushed_records = args.len() - 2;
                     {
                         let mut reg = self.db.write().await;
                         match reg.list_db.get_mut(&list_name) {
-                            Some(list) => {
-                                list.extend(values);
+                            Some(list_record) => {
+                                prev_records = list_record.list.len();
+                                for val in args.iter().skip(2) {
+                                    list_record.push_back(val.get_string()?);
+                                }
                             },
                             None => {
-                                reg.list_db.insert(list_name.clone(), values);
+                                let mut values = VecDeque::new();
+                                prev_records = 0;
+                                for val in args.iter().skip(2) {
+                                    values.push_back(val.get_string()?);
+                                }
+                                reg.list_db.insert(list_name.clone(), DbListRecord::from_list(values));
                             }
                         }
                     }
-                    let reg = self.db.read().await;
-                    let records = reg.list_db.get(&list_name).unwrap().len();
-                    RedisValue::Int(records as i64).encode()
+                    RedisValue::Int((prev_records + pushed_records) as i64).encode()
                 }
             },
             "LRANGE" => {
@@ -303,7 +359,10 @@ impl ClientHandler {
                     let mut stop = i64::from_str_radix(&stop_string, 10)?;
 
                     let reg = self.db.read().await;
-                    let list = reg.list_db.get(&list_name).unwrap_or(&vec![]).to_owned();
+                    let list = match reg.list_db.get(&list_name) {
+                        Some(list_record) => list_record.list.clone(),
+                        None => VecDeque::new()
+                    };
                     let list_len = list.len() as i64;
 
                     if start < 0 { start = max(list_len + start, 0) }
@@ -314,9 +373,8 @@ impl ClientHandler {
                     let stop = stop as usize;
 
                     let mut return_list = vec![];
-
                     if start < list.len() && start <= stop {
-                        for item in list[start..=stop].iter() {
+                        for item in list.range(start..=stop) {
                             return_list.push(RedisValue::String(item.clone()));
                         }
                     }
@@ -329,22 +387,28 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'LPUSH' command".to_string()).encode()
                 } else {
                     let list_name = args[1].get_string()?;
-                    let mut values = vec![];
-                    for val in args.iter().skip(2) {
-                        values.push(val.get_string()?);
-                    }
-                    values.reverse();
-                    {
-                        let reg = self.db.read().await;
-                        let current_list = reg.list_db.get(&list_name).unwrap_or(&vec![]).clone();
-                        values.extend(current_list);
-                    }
-                    let records = values.len();
+                    let prev_records;
+                    let pushed_records = args.len() - 2;
                     {
                         let mut reg = self.db.write().await;
-                        reg.list_db.insert(list_name.clone(), values);
+                        match reg.list_db.get_mut(&list_name) {
+                            Some(list_record) => {
+                                prev_records = list_record.list.len();
+                                for val in args.iter().skip(2) {
+                                    list_record.push_front(val.get_string()?);
+                                }
+                            },
+                            None => {
+                                let mut values = VecDeque::new();
+                                prev_records = 0;
+                                for val in args.iter().skip(2) {
+                                    values.push_front(val.get_string()?);
+                                }
+                                reg.list_db.insert(list_name.clone(), DbListRecord::from_list(values));
+                            }
+                        }
                     }
-                    RedisValue::Int(records as i64).encode()
+                    RedisValue::Int((prev_records + pushed_records) as i64).encode()
                 }
             },
             "LLEN" => {
@@ -352,7 +416,7 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'LLEN' command".to_string()).encode()
                 } else {
                     let list_name = args[1].get_string()?;
-                    let list_len = self.db.read().await.list_db.get(&list_name).unwrap_or(&vec![]).len();
+                    let list_len = self.db.read().await.list_db.get(&list_name).unwrap_or(&DbListRecord::new()).list.len();
                     RedisValue::Int(list_len as i64).encode()
                 }
             },
@@ -365,10 +429,17 @@ impl ClientHandler {
                     let mut returned_items = vec![];
                     {
                         let mut reg = self.db.write().await;
-                        if let Some(list) = reg.list_db.get_mut(&list_name) {
+                        if let Some(list_record) = reg.list_db.get_mut(&list_name) {
+
                             for _ in 0..pop_amount {
-                                let popped = list.remove(0);
-                                returned_items.push(RedisValue::String(popped));
+                                match list_record.pop_front() {
+                                    Some(popped) => {
+                                        returned_items.push(RedisValue::String(popped));
+                                    },
+                                    None => {
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -376,6 +447,54 @@ impl ClientHandler {
                         returned_items[0].encode()
                     } else {
                         RedisValue::Array(returned_items).encode()
+                    }
+                }
+            },
+            "BLPOP" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'BLPOP' command".to_string()).encode()
+                } else {
+                    let list_name = args[1].get_string()?;
+                    let timeout = args[2].get_string()?.parse::<f64>()?;
+                    let mut value = None;
+                    let mut waiter = None;
+                    // block to either get the value via pop or setup a waiter for when values come
+                    {
+                        let mut reg = self.db.write().await;
+                        let list_record = match reg.list_db.get_mut(&list_name) {
+                            None => {
+                                reg.list_db.insert(list_name.clone(), DbListRecord::new());
+                                reg.list_db.get_mut(&list_name).unwrap()
+                            },
+                            Some(list_record) => list_record
+                        };
+                        if !list_record.list.is_empty() {
+                            value = list_record.pop_front();
+                        } else {
+                            let (sender, receiver) = unbounded_channel::<String>();
+                            list_record.subscribe_waiter(sender);
+                            waiter = Some(receiver);
+                        }
+                    }
+                    // wait for some value, either with timeout or stay waiting
+                    if let Some(mut receiver) = waiter {
+                        if timeout == 0.0 {
+                            value = receiver.recv().await;
+                        } else {
+                            tokio::select! {
+                                result = receiver.recv() => {
+                                    value = result;
+                                }
+                                _ = time::sleep(Duration::from_secs_f64(timeout)) => ()
+                            }
+                        }
+                    }
+                    // actually respond to the client
+                    if let Some(value) = value {
+                        let array = vec![RedisValue::String(list_name), RedisValue::String(value)];
+                        RedisValue::Array(array).encode()
+                    } else {
+                        RedisValue::NullArray.encode()
                     }
                 }
             },
