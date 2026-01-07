@@ -7,12 +7,45 @@ use crate::modules::{parser::RedisParser, values::RedisValue};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 
-pub struct DbRecord {
+enum DbRecord {
+    String(StringRecord),
+    List(ListRecord),
+}
+
+impl DbRecord {
+    fn get_string(&self) -> Option<&StringRecord> {
+        match self {
+            Self::String(string_record) => Some(string_record),
+            _ => None
+        }
+    }
+    fn get_list(&self) -> Option<&ListRecord> {
+        match self {
+            Self::List(list_record) => Some(list_record),
+            _ => None,
+        }
+    }
+    fn get_mut_list(&mut self) -> Option<&mut ListRecord> {
+        match self {
+            Self::List(list_record) => Some(list_record),
+            _ => None,
+        }
+    }
+    fn get_type(&self) -> String{
+        match self {
+            Self::List(_) => "list".to_string(),
+            Self::String(_) => "string".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StringRecord {
     value: RedisValue,
     time_limit: Option<DateTime<Utc>>,
 }
 
-impl DbRecord {
+impl StringRecord {
     pub fn new(value: RedisValue) -> Self {
         Self { value, time_limit: None }
     }
@@ -32,12 +65,12 @@ impl DbRecord {
     }
 }
 
-pub struct DbListRecord {
+pub struct ListRecord {
     list: VecDeque<String>,
     waiters: VecDeque<UnboundedSender<String>>
 }
 
-impl DbListRecord {
+impl ListRecord {
     fn new() -> Self {
         Self { list: VecDeque::new(), waiters: VecDeque::new() }
     }
@@ -106,12 +139,12 @@ pub struct ClientHandler {
 
 pub struct DB {
     kv_db: HashMap<String, DbRecord>,
-    list_db: HashMap<String, DbListRecord>,
+    //list_db: HashMap<String, DbListRecord>,
 }
 
 impl DB {
     pub fn new() -> Self {
-        Self { kv_db: HashMap::new(), list_db: HashMap::new() }
+        Self { kv_db: HashMap::new() }
     }
 }
 
@@ -161,6 +194,7 @@ impl ClientHandler {
             }
         }
     }
+
     async fn handle_commands(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
         let response = match command {
             "PING" =>  {
@@ -192,19 +226,19 @@ impl ClientHandler {
                         let now = Utc::now();
                         let delta = TimeDelta::milliseconds(milliseconds_limit as i64);
                         let limit = now.checked_add_signed(delta).unwrap();
-                        record = DbRecord::new_with_limit(value, limit);
+                        record = StringRecord::new_with_limit(value, limit);
                     } else if args.len() > 4 && args[3].get_string()?.to_uppercase() == "EX" {
                         let seconds_limit = usize::from_str_radix(args[4].get_string()?.as_str(), 10)?;
                         let now = Utc::now();
                         let delta = TimeDelta::seconds(seconds_limit as i64);
                         let limit = now.checked_add_signed(delta).unwrap();
-                        record = DbRecord::new_with_limit(value, limit);
+                        record = StringRecord::new_with_limit(value, limit);
                     } else {
-                        record = DbRecord::new(value);
+                        record = StringRecord::new(value);
                     }
                     {
                         let mut w_db = self.db.write().await;
-                        w_db.kv_db.insert(key, record);
+                        w_db.kv_db.insert(key, DbRecord::String(record));
                     }
                     RedisValue::String("OK".to_string()).as_simple_string()?
 
@@ -221,8 +255,9 @@ impl ClientHandler {
                     let record = map.get(&key);
                     match record {
                         Some(record) => {
-                            if record.is_valid() {
-                                record.value.encode()
+                            let string_record = record.get_string();
+                            if string_record.is_some() && string_record.unwrap().is_valid() {
+                                string_record.unwrap().value.encode()
                             } else {
                                 RedisValue::NullString.encode()
                             }
@@ -326,12 +361,16 @@ impl ClientHandler {
                     let prev_records;
                     let pushed_records = args.len() - 2;
                     {
-                        let mut reg = self.db.write().await;
-                        match reg.list_db.get_mut(&list_name) {
-                            Some(list_record) => {
-                                prev_records = list_record.list.len();
-                                for val in args.iter().skip(2) {
-                                    list_record.push_back(val.get_string()?);
+                        let mut db = self.db.write().await;
+                        match db.kv_db.get_mut(&list_name) {
+                            Some(record) => {
+                                if let Some(list_record) = record.get_mut_list() {
+                                    prev_records = list_record.list.len();
+                                    for val in args.iter().skip(2) {
+                                        list_record.push_back(val.get_string()?);
+                                    }
+                                } else {
+                                    return Err(anyhow!("Record is not of type list. Line {}", line!()))
                                 }
                             },
                             None => {
@@ -340,7 +379,7 @@ impl ClientHandler {
                                 for val in args.iter().skip(2) {
                                     values.push_back(val.get_string()?);
                                 }
-                                reg.list_db.insert(list_name.clone(), DbListRecord::from_list(values));
+                                db.kv_db.insert(list_name.clone(), DbRecord::List(ListRecord::from_list(values)));
                             }
                         }
                     }
@@ -358,9 +397,15 @@ impl ClientHandler {
                     let mut start = i64::from_str_radix(&start_string, 10)?;
                     let mut stop = i64::from_str_radix(&stop_string, 10)?;
 
-                    let reg = self.db.read().await;
-                    let list = match reg.list_db.get(&list_name) {
-                        Some(list_record) => list_record.list.clone(),
+                    let db = self.db.read().await;
+                    let list = match db.kv_db.get(&list_name) {
+                        Some(record) => {
+                            if let Some(list_record) = record.get_list() {
+                                list_record.list.clone()
+                            } else {
+                                VecDeque::new()
+                            }
+                        },
                         None => VecDeque::new()
                     };
                     let list_len = list.len() as i64;
@@ -390,12 +435,16 @@ impl ClientHandler {
                     let prev_records;
                     let pushed_records = args.len() - 2;
                     {
-                        let mut reg = self.db.write().await;
-                        match reg.list_db.get_mut(&list_name) {
-                            Some(list_record) => {
-                                prev_records = list_record.list.len();
-                                for val in args.iter().skip(2) {
-                                    list_record.push_front(val.get_string()?);
+                        let mut db = self.db.write().await;
+                        match db.kv_db.get_mut(&list_name) {
+                            Some(record) => {
+                                if let Some(list_record) = record.get_mut_list() {
+                                    prev_records = list_record.list.len();
+                                    for val in args.iter().skip(2) {
+                                        list_record.push_front(val.get_string()?);
+                                    }
+                                } else {
+                                    return Err(anyhow!("Record is not of type list. Line {}", line!()))
                                 }
                             },
                             None => {
@@ -404,7 +453,7 @@ impl ClientHandler {
                                 for val in args.iter().skip(2) {
                                     values.push_front(val.get_string()?);
                                 }
-                                reg.list_db.insert(list_name.clone(), DbListRecord::from_list(values));
+                                db.kv_db.insert(list_name.clone(), DbRecord::List(ListRecord::from_list(values)));
                             }
                         }
                     }
@@ -416,7 +465,7 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'LLEN' command".to_string()).encode()
                 } else {
                     let list_name = args[1].get_string()?;
-                    let list_len = self.db.read().await.list_db.get(&list_name).unwrap_or(&DbListRecord::new()).list.len();
+                    let list_len = self.db.read().await.kv_db.get(&list_name).unwrap_or(&DbRecord::List(ListRecord::new())).get_list().unwrap_or(&ListRecord::new()).list.len();
                     RedisValue::Int(list_len as i64).encode()
                 }
             },
@@ -428,9 +477,8 @@ impl ClientHandler {
                     let pop_amount = if args.len() == 3 { usize::from_str_radix(&args[2].get_string()?, 10)? } else { 1 };
                     let mut returned_items = vec![];
                     {
-                        let mut reg = self.db.write().await;
-                        if let Some(list_record) = reg.list_db.get_mut(&list_name) {
-
+                        let mut db = self.db.write().await;
+                        if let Some(record) = db.kv_db.get_mut(&list_name) && let Some(list_record) = record.get_mut_list() {
                             for _ in 0..pop_amount {
                                 match list_record.pop_front() {
                                     Some(popped) => {
@@ -460,13 +508,19 @@ impl ClientHandler {
                     let mut waiter = None;
                     // block to either get the value via pop or setup a waiter for when values come
                     {
-                        let mut reg = self.db.write().await;
-                        let list_record = match reg.list_db.get_mut(&list_name) {
+                        let mut db = self.db.write().await;
+                        let list_record = match db.kv_db.get_mut(&list_name) {
                             None => {
-                                reg.list_db.insert(list_name.clone(), DbListRecord::new());
-                                reg.list_db.get_mut(&list_name).unwrap()
+                                db.kv_db.insert(list_name.clone(), DbRecord::List(ListRecord::new()));
+                                db.kv_db.get_mut(&list_name).unwrap().get_mut_list().unwrap()
                             },
-                            Some(list_record) => list_record
+                            Some(record) => {
+                                if let Some(list_record) = record.get_mut_list() {
+                                    list_record
+                                } else {
+                                    return Err(anyhow!("Record is not of type list. Line {}", line!()))
+                                }
+                            }
                         };
                         if !list_record.list.is_empty() {
                             value = list_record.pop_front();
@@ -495,6 +549,20 @@ impl ClientHandler {
                         RedisValue::Array(array).encode()
                     } else {
                         RedisValue::NullArray.encode()
+                    }
+                }
+            },
+            "TYPE" => {
+                if args.len() != 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'TYPE' command".to_string()).encode()
+                } else {
+                    let varname = args[1].get_string()?;
+                    let db = self.db.read().await;
+                    match db.kv_db.get(&varname) {
+                        Some(record) => {
+                            RedisValue::String(record.get_type()).as_simple_string()?
+                        },
+                        None => RedisValue::String("none".to_string()).as_simple_string()?
                     }
                 }
             },
