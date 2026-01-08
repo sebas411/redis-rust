@@ -1,6 +1,7 @@
 use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeDelta, Utc};
+use regex::Regex;
 use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
 use crate::modules::{parser::RedisParser, values::RedisValue};
@@ -81,6 +82,9 @@ impl StreamRecord {
     }
     fn push(&mut self, entry: StreamEntry) {
         self.0.push(entry);
+    }
+    fn peek_last(&self) -> &StreamEntry {
+        self.0.last().unwrap()
     }
 }
 
@@ -604,8 +608,25 @@ impl ClientHandler {
                 if args.len() < 5 || args.len() % 2 != 1 {
                     RedisValue::Error("Err wrong number of arguments for 'XADD' command".to_string()).encode()
                 } else {
+                    let mut error_response = None;
                     let stream_name = args[1].get_string()?;
                     let entry_id = args[2].get_string()?;
+
+                    let re = Regex::new(r"^(\d+|\*)-(\d+|\*)$").unwrap();
+
+                    if !re.is_match(&entry_id) {
+                        return Err(anyhow!("Bad format for stream id. Line {}", line!()))
+                    }
+
+                    let mut id_split = entry_id.split("-");
+                    let milliseconds_str = id_split.next().unwrap();
+                    let milliseconds = usize::from_str_radix(milliseconds_str, 10).unwrap();
+                    let sequence_str = id_split.next().unwrap();
+                    let sequence = usize::from_str_radix(sequence_str, 10).unwrap();
+
+                    if milliseconds == 0 && sequence == 0 {
+                        error_response = Some(RedisValue::Error("ERR The ID specified in XADD must be greater than 0-0".to_string()).encode())
+                    }
 
                     let mut values = HashMap::new();
 
@@ -616,12 +637,19 @@ impl ClientHandler {
                     }
                     let stream_entry = StreamEntry::new(&entry_id, Some(values));
 
-                    {
+                    if error_response.is_none() {
                         let mut db = self.db.write().await;
                         match db.kv_db.get_mut(&stream_name) {
                             Some(record) => {
                                 if let Some(stream_record) = record.get_mut_stream() {
-                                    stream_record.push(stream_entry);
+                                    let mut last_id = stream_record.peek_last().id.split("-");
+                                    let last_milli = usize::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    let last_seq = usize::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    if last_milli > milliseconds || (last_milli == milliseconds && last_seq >= sequence ) {
+                                        error_response = Some(RedisValue::Error("ERR The ID specified in XADD is equal or smaller than the target stream top item".to_string()).encode())
+                                    } else {
+                                        stream_record.push(stream_entry);
+                                    }
                                 }
                             },
                             None => {
@@ -630,7 +658,11 @@ impl ClientHandler {
                             }
                         }
                     }
-                    RedisValue::String(entry_id).encode()
+
+                    match error_response {
+                        None => RedisValue::String(entry_id).encode(),
+                        Some(err) => err,
+                    }
                 }
             }
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
