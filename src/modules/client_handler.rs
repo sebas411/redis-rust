@@ -10,6 +10,7 @@ const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCR
 enum DbRecord {
     String(StringRecord),
     List(ListRecord),
+    Stream(StreamRecord),
 }
 
 impl DbRecord {
@@ -31,10 +32,17 @@ impl DbRecord {
             _ => None,
         }
     }
+    fn get_mut_stream(&mut self) -> Option<&mut StreamRecord> {
+        match self {
+            Self::Stream(stream_record) => Some(stream_record),
+            _ => None,
+        }
+    }
     fn get_type(&self) -> String{
         match self {
             Self::List(_) => "list".to_string(),
             Self::String(_) => "string".to_string(),
+            Self::Stream(_) => "stream".to_string(),
         }
     }
 }
@@ -62,6 +70,32 @@ impl StringRecord {
             }
         }
         true
+    }
+}
+
+struct StreamRecord(Vec<StreamEntry>);
+
+impl StreamRecord {
+    fn new(entry: StreamEntry) -> Self {
+        Self(vec![entry])
+    }
+    fn push(&mut self, entry: StreamEntry) {
+        self.0.push(entry);
+    }
+}
+
+struct StreamEntry {
+    id: String,
+    kv: HashMap<String, String>,
+}
+
+impl StreamEntry {
+    fn new(id: &str, values: Option<HashMap<String, String>>) -> Self {
+        let stream = match values {
+            Some(val) => val,
+            None => HashMap::new(),
+        };
+        Self { id: id.to_string(), kv: stream }
     }
 }
 
@@ -566,6 +600,39 @@ impl ClientHandler {
                     }
                 }
             },
+            "XADD" => {
+                if args.len() < 5 || args.len() % 2 != 1 {
+                    RedisValue::Error("Err wrong number of arguments for 'XADD' command".to_string()).encode()
+                } else {
+                    let stream_name = args[1].get_string()?;
+                    let entry_id = args[2].get_string()?;
+
+                    let mut values = HashMap::new();
+
+                    for i in (3..args.len()).step_by(2) {
+                        let key = args[i].get_string()?;
+                        let value = args[i+1].get_string()?;
+                        values.insert(key, value);
+                    }
+                    let stream_entry = StreamEntry::new(&entry_id, Some(values));
+
+                    {
+                        let mut db = self.db.write().await;
+                        match db.kv_db.get_mut(&stream_name) {
+                            Some(record) => {
+                                if let Some(stream_record) = record.get_mut_stream() {
+                                    stream_record.push(stream_entry);
+                                }
+                            },
+                            None => {
+                                let record = DbRecord::Stream(StreamRecord::new(stream_entry));
+                                db.kv_db.insert(stream_name, record);
+                            }
+                        }
+                    }
+                    RedisValue::String(entry_id).encode()
+                }
+            }
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
