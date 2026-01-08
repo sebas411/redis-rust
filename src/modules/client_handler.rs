@@ -1,4 +1,4 @@
-use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc, time::{SystemTime, UNIX_EPOCH}, usize};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeDelta, Utc};
 use regex::Regex;
@@ -34,6 +34,12 @@ impl DbRecord {
         }
     }
     fn get_mut_stream(&mut self) -> Option<&mut StreamRecord> {
+        match self {
+            Self::Stream(stream_record) => Some(stream_record),
+            _ => None,
+        }
+    }
+    fn get_stream(&self) -> Option<&StreamRecord> {
         match self {
             Self::Stream(stream_record) => Some(stream_record),
             _ => None,
@@ -695,7 +701,67 @@ impl ClientHandler {
                         Some(err) => err,
                     }
                 }
-            }
+            },
+            "XRANGE" => {
+                if args.len() != 4 {
+                    RedisValue::Error("Err wrong number of arguments for 'XRANGE' command".to_string()).encode()
+                } else {
+                    let stream_name = args[1].get_string()?;
+                    let re = Regex::new(r"^\d+(-\d+)?$").unwrap();
+                    let lower_end = args[2].get_string()?;
+                    let higher_end = args[3].get_string()?;
+                    if !re.is_match(&lower_end) {
+                        return Err(anyhow!("Bad format for stream id in range's lower end. Line {}", line!()))
+                    }
+                    if !re.is_match(&higher_end) {
+                        return Err(anyhow!("Bad format for stream id in range's lower end. Line {}", line!()))
+                    }
+                    let lower_milliseconds;
+                    let lower_sequence;
+                    if lower_end.contains('-') {
+                        let mut lower_split = lower_end.split('-');
+                        lower_milliseconds = usize::from_str_radix(&lower_split.next().unwrap(), 10).unwrap();
+                        lower_sequence = usize::from_str_radix(&lower_split.next().unwrap(), 10).unwrap();
+                    } else {
+                        lower_milliseconds = usize::from_str_radix(&lower_end, 10).unwrap();
+                        lower_sequence = 0;
+                    }
+                    let higher_milliseconds;
+                    let higher_sequence;
+                    if higher_end.contains('-') {
+                        let mut higher_split = higher_end.split('-');
+                        higher_milliseconds = usize::from_str_radix(&higher_split.next().unwrap(), 10).unwrap();
+                        higher_sequence = usize::from_str_radix(&higher_split.next().unwrap(), 10).unwrap();
+                    } else {
+                        higher_milliseconds = usize::from_str_radix(&higher_end, 10).unwrap();
+                        higher_sequence = usize::MAX;
+                    }
+                    let mut response_array = vec![];
+                    let db = self.db.read().await;
+                    if let Some(record) = db.kv_db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
+                        for entry in &stream_record.0 {
+                            let mut entry_id = entry.id.split('-');
+                            let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                            let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                            if entry_millis < lower_milliseconds || entry_millis == lower_milliseconds && entry_seq < lower_sequence {
+                                continue;
+                            } else if entry_millis > higher_milliseconds || entry_millis == higher_milliseconds && entry_seq > higher_sequence {
+                                break;
+                            }
+                            let mut entry_array = vec![];
+                            entry_array.push(RedisValue::String(entry.id.clone()));
+                            let mut values_array = vec![];
+                            for (k, v) in &entry.kv {
+                                values_array.push(RedisValue::String(k.clone()));
+                                values_array.push(RedisValue::String(v.clone()));
+                            }
+                            entry_array.push(RedisValue::Array(values_array));
+                            response_array.push(RedisValue::Array(entry_array));
+                        }
+                    }
+                    RedisValue::Array(response_array).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
