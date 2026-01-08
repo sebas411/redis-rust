@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
 
-use crate::modules::{db::{DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue};
+use crate::modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 
@@ -16,16 +16,6 @@ pub struct ClientHandler {
     subscribe_mode: bool,
 }
 
-pub struct DB {
-    kv_db: HashMap<String, DbRecord>,
-    //list_db: HashMap<String, DbListRecord>,
-}
-
-impl DB {
-    pub fn new() -> Self {
-        Self { kv_db: HashMap::new() }
-    }
-}
 
 impl ClientHandler {
     pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>) -> Self {
@@ -117,7 +107,7 @@ impl ClientHandler {
                     }
                     {
                         let mut w_db = self.db.write().await;
-                        w_db.kv_db.insert(key, DbRecord::String(record));
+                        w_db.insert(key, DbRecord::String(record));
                     }
                     RedisValue::String("OK".to_string()).as_simple_string()?
 
@@ -129,9 +119,8 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'GET' command".to_string()).encode()
                 } else {
                     let key = args[1].clone().get_string()?;
-                    let r_db = self.db.read().await;
-                    let map = &r_db.kv_db;
-                    let record = map.get(&key);
+                    let db = self.db.read().await;
+                    let record = db.get(&key);
                     match record {
                         Some(record) => {
                             let string_record = record.get_string();
@@ -241,7 +230,7 @@ impl ClientHandler {
                     let pushed_records = args.len() - 2;
                     {
                         let mut db = self.db.write().await;
-                        match db.kv_db.get_mut(&list_name) {
+                        match db.get_mut(&list_name) {
                             Some(record) => {
                                 if let Some(list_record) = record.get_mut_list() {
                                     prev_records = list_record.len();
@@ -258,7 +247,7 @@ impl ClientHandler {
                                 for val in args.iter().skip(2) {
                                     values.push_back(val.get_string()?);
                                 }
-                                db.kv_db.insert(list_name.clone(), DbRecord::List(ListRecord::from_list(values)));
+                                db.insert(list_name.clone(), DbRecord::List(ListRecord::from_list(values)));
                             }
                         }
                     }
@@ -277,7 +266,7 @@ impl ClientHandler {
                     let mut stop = i64::from_str_radix(&stop_string, 10)?;
 
                     let db = self.db.read().await;
-                    let list = match db.kv_db.get(&list_name) {
+                    let list = match db.get(&list_name) {
                         Some(record) => {
                             if let Some(list_record) = record.get_list() {
                                 list_record.get_list()
@@ -315,7 +304,7 @@ impl ClientHandler {
                     let pushed_records = args.len() - 2;
                     {
                         let mut db = self.db.write().await;
-                        match db.kv_db.get_mut(&list_name) {
+                        match db.get_mut(&list_name) {
                             Some(record) => {
                                 if let Some(list_record) = record.get_mut_list() {
                                     prev_records = list_record.len();
@@ -332,7 +321,7 @@ impl ClientHandler {
                                 for val in args.iter().skip(2) {
                                     values.push_front(val.get_string()?);
                                 }
-                                db.kv_db.insert(list_name.clone(), DbRecord::List(ListRecord::from_list(values)));
+                                db.insert(list_name.clone(), DbRecord::List(ListRecord::from_list(values)));
                             }
                         }
                     }
@@ -344,7 +333,7 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'LLEN' command".to_string()).encode()
                 } else {
                     let list_name = args[1].get_string()?;
-                    let list_len = self.db.read().await.kv_db.get(&list_name).unwrap_or(&DbRecord::List(ListRecord::new())).get_list().unwrap_or(&ListRecord::new()).len();
+                    let list_len = self.db.read().await.get(&list_name).unwrap_or(&DbRecord::List(ListRecord::new())).get_list().unwrap_or(&ListRecord::new()).len();
                     RedisValue::Int(list_len as i64).encode()
                 }
             },
@@ -357,7 +346,7 @@ impl ClientHandler {
                     let mut returned_items = vec![];
                     {
                         let mut db = self.db.write().await;
-                        if let Some(record) = db.kv_db.get_mut(&list_name) && let Some(list_record) = record.get_mut_list() {
+                        if let Some(record) = db.get_mut(&list_name) && let Some(list_record) = record.get_mut_list() {
                             for _ in 0..pop_amount {
                                 match list_record.pop_front() {
                                     Some(popped) => {
@@ -388,10 +377,10 @@ impl ClientHandler {
                     // block to either get the value via pop or setup a waiter for when values come
                     {
                         let mut db = self.db.write().await;
-                        let list_record = match db.kv_db.get_mut(&list_name) {
+                        let list_record = match db.get_mut(&list_name) {
                             None => {
-                                db.kv_db.insert(list_name.clone(), DbRecord::List(ListRecord::new()));
-                                db.kv_db.get_mut(&list_name).unwrap().get_mut_list().unwrap()
+                                db.insert(list_name.clone(), DbRecord::List(ListRecord::new()));
+                                db.get_mut(&list_name).unwrap().get_mut_list().unwrap()
                             },
                             Some(record) => {
                                 if let Some(list_record) = record.get_mut_list() {
@@ -437,7 +426,7 @@ impl ClientHandler {
                 } else {
                     let varname = args[1].get_string()?;
                     let db = self.db.read().await;
-                    match db.kv_db.get(&varname) {
+                    match db.get(&varname) {
                         Some(record) => {
                             RedisValue::String(record.get_type()).as_simple_string()?
                         },
@@ -483,7 +472,7 @@ impl ClientHandler {
                     
                     if error_response.is_none() {
                         let mut db = self.db.write().await;
-                        match db.kv_db.get_mut(&stream_name) {
+                        match db.get_mut(&stream_name) {
                             Some(record) => {
                                 if let Some(stream_record) = record.get_mut_stream() {
                                     let mut last_id = stream_record.peek_last().get_id().split("-");
@@ -526,7 +515,7 @@ impl ClientHandler {
                                 entry_id = format!("{}-{}", milliseconds, sequence);
                                 let stream_entry = StreamEntry::new(&entry_id, Some(values));
                                 let record = DbRecord::Stream(StreamRecord::new(stream_entry));
-                                db.kv_db.insert(stream_name, record);
+                                db.insert(stream_name, record);
                             }
                         }
                     }
@@ -573,7 +562,7 @@ impl ClientHandler {
                     }
                     let mut response_array = vec![];
                     let db = self.db.read().await;
-                    if let Some(record) = db.kv_db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
+                    if let Some(record) = db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
                         for entry in stream_record {
                             let mut entry_id = entry.get_id().split('-');
                             let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();

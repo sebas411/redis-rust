@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-
 use chrono::{DateTime, Utc};
 use tokio::sync::mpsc::UnboundedSender;
-
 use crate::modules::values::RedisValue;
+
+pub type DB = HashMap<String, DbRecord>;
 
 pub enum DbRecord {
     String(StringRecord),
