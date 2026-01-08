@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 use anyhow::Result;
 use tokio::{net::TcpListener, signal, sync::{RwLock, mpsc::unbounded_channel}, task::JoinSet};
 
-use crate::modules::client_handler::{ClientHandler, DB, Registry};
+use crate::modules::{client_handler::{ClientHandler, DB}, db::Registry};
 mod modules;
 
 

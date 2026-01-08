@@ -1,177 +1,12 @@
 use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc, time::{SystemTime, UNIX_EPOCH}, usize};
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{TimeDelta, Utc};
 use regex::Regex;
-use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
+use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
 
-use crate::modules::{parser::RedisParser, values::RedisValue};
+use crate::modules::{db::{DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
-
-enum DbRecord {
-    String(StringRecord),
-    List(ListRecord),
-    Stream(StreamRecord),
-}
-
-impl DbRecord {
-    fn get_string(&self) -> Option<&StringRecord> {
-        match self {
-            Self::String(string_record) => Some(string_record),
-            _ => None
-        }
-    }
-    fn get_list(&self) -> Option<&ListRecord> {
-        match self {
-            Self::List(list_record) => Some(list_record),
-            _ => None,
-        }
-    }
-    fn get_mut_list(&mut self) -> Option<&mut ListRecord> {
-        match self {
-            Self::List(list_record) => Some(list_record),
-            _ => None,
-        }
-    }
-    fn get_mut_stream(&mut self) -> Option<&mut StreamRecord> {
-        match self {
-            Self::Stream(stream_record) => Some(stream_record),
-            _ => None,
-        }
-    }
-    fn get_stream(&self) -> Option<&StreamRecord> {
-        match self {
-            Self::Stream(stream_record) => Some(stream_record),
-            _ => None,
-        }
-    }
-    fn get_type(&self) -> String{
-        match self {
-            Self::List(_) => "list".to_string(),
-            Self::String(_) => "string".to_string(),
-            Self::Stream(_) => "stream".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StringRecord {
-    value: RedisValue,
-    time_limit: Option<DateTime<Utc>>,
-}
-
-impl StringRecord {
-    pub fn new(value: RedisValue) -> Self {
-        Self { value, time_limit: None }
-    }
-
-    fn new_with_limit(value: RedisValue, limit: DateTime<Utc>) -> Self {
-        Self { value, time_limit: Some(limit) }
-    }
-
-    fn is_valid(&self) -> bool {
-        if let Some(limit) = self.time_limit {
-            let now = Utc::now();
-            if now >= limit {
-                return false
-            }
-        }
-        true
-    }
-}
-
-struct StreamRecord(Vec<StreamEntry>);
-
-impl StreamRecord {
-    fn new(entry: StreamEntry) -> Self {
-        Self(vec![entry])
-    }
-    fn push(&mut self, entry: StreamEntry) {
-        self.0.push(entry);
-    }
-    fn peek_last(&self) -> &StreamEntry {
-        self.0.last().unwrap()
-    }
-}
-
-struct StreamEntry {
-    id: String,
-    kv: HashMap<String, String>,
-}
-
-impl StreamEntry {
-    fn new(id: &str, values: Option<HashMap<String, String>>) -> Self {
-        let stream = match values {
-            Some(val) => val,
-            None => HashMap::new(),
-        };
-        Self { id: id.to_string(), kv: stream }
-    }
-}
-
-pub struct ListRecord {
-    list: VecDeque<String>,
-    waiters: VecDeque<UnboundedSender<String>>
-}
-
-impl ListRecord {
-    fn new() -> Self {
-        Self { list: VecDeque::new(), waiters: VecDeque::new() }
-    }
-    fn from_list(list: VecDeque<String>) -> Self {
-        Self { list, waiters: VecDeque::new() }
-    }
-    fn push_front(&mut self, value: String) {
-        if !self.waiters.is_empty() {
-            let waiter = self.waiters.pop_front().unwrap();
-            let mut result = waiter.send(value.clone());
-            while result.is_err() {
-                if self.waiters.is_empty() {
-                    self.list.push_front(value);
-                    return;
-                }
-                let waiter = self.waiters.pop_front().unwrap();
-                result = waiter.send(value.clone());
-            }
-        } else {
-            self.list.push_front(value);
-        }
-    }
-    fn push_back(&mut self, value: String) {
-        if !self.waiters.is_empty() {
-            let waiter = self.waiters.pop_front().unwrap();
-            let mut result = waiter.send(value.clone());
-            while result.is_err() {
-                if self.waiters.is_empty() {
-                    self.list.push_back(value);
-                    return;
-                }
-                let waiter = self.waiters.pop_front().unwrap();
-                result = waiter.send(value.clone());
-            }
-        } else {
-            self.list.push_back(value);
-        }
-    }
-    fn pop_front(&mut self) -> Option<String> {
-        self.list.pop_front()
-    }
-    fn subscribe_waiter(&mut self, waiter: UnboundedSender<String>) {
-        self.waiters.push_back(waiter);
-    }
-}
-
-pub struct Registry {
-    channels: HashMap<String, HashSet<u32>>,
-    subscriptions: HashMap<u32, HashSet<String>>,
-    pub senders: HashMap<u32, UnboundedSender<Vec<u8>>>,
-}
-
-impl Registry {
-    pub fn new() -> Self {
-        Self { channels: HashMap::new(), subscriptions: HashMap::new(), senders: HashMap::new() }
-    }
-}
 
 pub struct ClientHandler {
     id: u32,
@@ -301,7 +136,7 @@ impl ClientHandler {
                         Some(record) => {
                             let string_record = record.get_string();
                             if string_record.is_some() && string_record.unwrap().is_valid() {
-                                string_record.unwrap().value.encode()
+                                string_record.unwrap().get_value().encode()
                             } else {
                                 RedisValue::NullString.encode()
                             }
@@ -409,7 +244,7 @@ impl ClientHandler {
                         match db.kv_db.get_mut(&list_name) {
                             Some(record) => {
                                 if let Some(list_record) = record.get_mut_list() {
-                                    prev_records = list_record.list.len();
+                                    prev_records = list_record.len();
                                     for val in args.iter().skip(2) {
                                         list_record.push_back(val.get_string()?);
                                     }
@@ -445,7 +280,7 @@ impl ClientHandler {
                     let list = match db.kv_db.get(&list_name) {
                         Some(record) => {
                             if let Some(list_record) = record.get_list() {
-                                list_record.list.clone()
+                                list_record.get_list()
                             } else {
                                 VecDeque::new()
                             }
@@ -483,7 +318,7 @@ impl ClientHandler {
                         match db.kv_db.get_mut(&list_name) {
                             Some(record) => {
                                 if let Some(list_record) = record.get_mut_list() {
-                                    prev_records = list_record.list.len();
+                                    prev_records = list_record.len();
                                     for val in args.iter().skip(2) {
                                         list_record.push_front(val.get_string()?);
                                     }
@@ -509,7 +344,7 @@ impl ClientHandler {
                     RedisValue::Error("Err wrong number of arguments for 'LLEN' command".to_string()).encode()
                 } else {
                     let list_name = args[1].get_string()?;
-                    let list_len = self.db.read().await.kv_db.get(&list_name).unwrap_or(&DbRecord::List(ListRecord::new())).get_list().unwrap_or(&ListRecord::new()).list.len();
+                    let list_len = self.db.read().await.kv_db.get(&list_name).unwrap_or(&DbRecord::List(ListRecord::new())).get_list().unwrap_or(&ListRecord::new()).len();
                     RedisValue::Int(list_len as i64).encode()
                 }
             },
@@ -566,7 +401,7 @@ impl ClientHandler {
                                 }
                             }
                         };
-                        if !list_record.list.is_empty() {
+                        if !list_record.is_empty() {
                             value = list_record.pop_front();
                         } else {
                             let (sender, receiver) = unbounded_channel::<String>();
@@ -651,7 +486,7 @@ impl ClientHandler {
                         match db.kv_db.get_mut(&stream_name) {
                             Some(record) => {
                                 if let Some(stream_record) = record.get_mut_stream() {
-                                    let mut last_id = stream_record.peek_last().id.split("-");
+                                    let mut last_id = stream_record.peek_last().get_id().split("-");
                                     let last_milli = i64::from_str_radix(last_id.next().unwrap(), 10).unwrap();
                                     let last_seq = i64::from_str_radix(last_id.next().unwrap(), 10).unwrap();
                                     if milliseconds_str == "*" {
@@ -739,8 +574,8 @@ impl ClientHandler {
                     let mut response_array = vec![];
                     let db = self.db.read().await;
                     if let Some(record) = db.kv_db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
-                        for entry in &stream_record.0 {
-                            let mut entry_id = entry.id.split('-');
+                        for entry in stream_record {
+                            let mut entry_id = entry.get_id().split('-');
                             let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
                             let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
                             if entry_millis < lower_milliseconds || entry_millis == lower_milliseconds && entry_seq < lower_sequence {
@@ -749,9 +584,9 @@ impl ClientHandler {
                                 break;
                             }
                             let mut entry_array = vec![];
-                            entry_array.push(RedisValue::String(entry.id.clone()));
+                            entry_array.push(RedisValue::String(entry.get_id().to_string()));
                             let mut values_array = vec![];
-                            for (k, v) in &entry.kv {
+                            for (k, v) in entry {
                                 values_array.push(RedisValue::String(k.clone()));
                                 values_array.push(RedisValue::String(v.clone()));
                             }
