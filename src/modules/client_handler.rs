@@ -1,4 +1,4 @@
-use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, TimeDelta, Utc};
 use regex::Regex;
@@ -612,17 +612,21 @@ impl ClientHandler {
                     let stream_name = args[1].get_string()?;
                     let mut entry_id = args[2].get_string()?;
 
-                    let re = Regex::new(r"^(\d+|\*)-(\d+|\*)$").unwrap();
+                    let re = Regex::new(r"^((\d+|\*)-(\d+|\*)|\*)$").unwrap();
 
                     if !re.is_match(&entry_id) {
                         return Err(anyhow!("Bad format for stream id. Line {}", line!()))
                     }
 
+                    if entry_id == "*" {
+                        entry_id = "*-*".to_string();
+                    }
+
                     let mut id_split = entry_id.split("-");
                     let milliseconds_str = id_split.next().unwrap();
-                    let milliseconds = i32::from_str_radix(milliseconds_str, 10).unwrap_or(-1);
+                    let mut milliseconds = i64::from_str_radix(milliseconds_str, 10).unwrap_or(-1);
                     let sequence_str = id_split.next().unwrap();
-                    let mut sequence = i32::from_str_radix(sequence_str, 10).unwrap_or(-1);
+                    let mut sequence = i64::from_str_radix(sequence_str, 10).unwrap_or(-1);
 
                     if milliseconds == 0 && sequence == 0 {
                         error_response = Some(RedisValue::Error("ERR The ID specified in XADD must be greater than 0-0".to_string()).encode())
@@ -642,8 +646,13 @@ impl ClientHandler {
                             Some(record) => {
                                 if let Some(stream_record) = record.get_mut_stream() {
                                     let mut last_id = stream_record.peek_last().id.split("-");
-                                    let last_milli = i32::from_str_radix(last_id.next().unwrap(), 10).unwrap();
-                                    let last_seq = i32::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    let last_milli = i64::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    let last_seq = i64::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    if milliseconds_str == "*" {
+                                        let now = SystemTime::now();
+                                        let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
+                                        milliseconds = since_epoch.as_millis() as i64;
+                                    }
                                     if sequence_str == "*" {
                                         if last_milli == milliseconds {
                                             sequence = last_seq + 1;
@@ -661,6 +670,11 @@ impl ClientHandler {
                                 }
                             },
                             None => {
+                                if milliseconds_str == "*" {
+                                    let now = SystemTime::now();
+                                    let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
+                                    milliseconds = since_epoch.as_millis() as i64;
+                                }
                                 if sequence_str == "*" {
                                     if milliseconds == 0 {
                                         sequence = 1;
