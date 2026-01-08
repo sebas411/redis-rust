@@ -610,7 +610,7 @@ impl ClientHandler {
                 } else {
                     let mut error_response = None;
                     let stream_name = args[1].get_string()?;
-                    let entry_id = args[2].get_string()?;
+                    let mut entry_id = args[2].get_string()?;
 
                     let re = Regex::new(r"^(\d+|\*)-(\d+|\*)$").unwrap();
 
@@ -620,9 +620,9 @@ impl ClientHandler {
 
                     let mut id_split = entry_id.split("-");
                     let milliseconds_str = id_split.next().unwrap();
-                    let milliseconds = usize::from_str_radix(milliseconds_str, 10).unwrap();
+                    let milliseconds = i32::from_str_radix(milliseconds_str, 10).unwrap_or(-1);
                     let sequence_str = id_split.next().unwrap();
-                    let sequence = usize::from_str_radix(sequence_str, 10).unwrap();
+                    let mut sequence = i32::from_str_radix(sequence_str, 10).unwrap_or(-1);
 
                     if milliseconds == 0 && sequence == 0 {
                         error_response = Some(RedisValue::Error("ERR The ID specified in XADD must be greater than 0-0".to_string()).encode())
@@ -635,16 +635,24 @@ impl ClientHandler {
                         let value = args[i+1].get_string()?;
                         values.insert(key, value);
                     }
-                    let stream_entry = StreamEntry::new(&entry_id, Some(values));
-
+                    
                     if error_response.is_none() {
                         let mut db = self.db.write().await;
                         match db.kv_db.get_mut(&stream_name) {
                             Some(record) => {
                                 if let Some(stream_record) = record.get_mut_stream() {
                                     let mut last_id = stream_record.peek_last().id.split("-");
-                                    let last_milli = usize::from_str_radix(last_id.next().unwrap(), 10).unwrap();
-                                    let last_seq = usize::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    let last_milli = i32::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    let last_seq = i32::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    if sequence_str == "*" {
+                                        if last_milli == milliseconds {
+                                            sequence = last_seq + 1;
+                                        } else {
+                                            sequence = 0;
+                                        }
+                                    }
+                                    entry_id = format!("{}-{}", milliseconds, sequence);
+                                    let stream_entry = StreamEntry::new(&entry_id, Some(values));
                                     if last_milli > milliseconds || (last_milli == milliseconds && last_seq >= sequence ) {
                                         error_response = Some(RedisValue::Error("ERR The ID specified in XADD is equal or smaller than the target stream top item".to_string()).encode())
                                     } else {
@@ -653,6 +661,15 @@ impl ClientHandler {
                                 }
                             },
                             None => {
+                                if sequence_str == "*" {
+                                    if milliseconds == 0 {
+                                        sequence = 1;
+                                    } else {
+                                        sequence = 0;
+                                    }
+                                }
+                                entry_id = format!("{}-{}", milliseconds, sequence);
+                                let stream_entry = StreamEntry::new(&entry_id, Some(values));
                                 let record = DbRecord::Stream(StreamRecord::new(stream_entry));
                                 db.kv_db.insert(stream_name, record);
                             }
