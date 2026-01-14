@@ -596,43 +596,45 @@ impl ClientHandler {
                         RedisValue::Error("Err XREAD only compatible with STREAMS".to_string()).encode()
                     } else {
                         let re = Regex::new(r"^\d+-\d+$").unwrap();
-                        let stream_name = args[2].get_string()?;
-                        let entry_id = args[3].get_string()?;
-                        if !re.is_match(&entry_id) {
-                            return Err(anyhow!("Bad format for stream id. Line {}", line!()))
-                        }
-                        let mut entry_id_split = entry_id.split('-');
-                        let entry_milliseconds = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
-                        let entry_sequence = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
-                        let db = self.db.read().await;
-
                         let mut response_array = vec![];
-                        let mut stream_array = vec![];
-                        stream_array.push(RedisValue::String(stream_name.clone()));
-
-                        let mut entries_array = vec![];
-
-                        if let Some(record) = db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
-                            for entry in stream_record {
-                                let mut entry_id = entry.get_id().split('-');
-                                let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
-                                let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
-                                if entry_millis < entry_milliseconds || entry_millis == entry_milliseconds && entry_seq < entry_sequence {
-                                    continue;
-                                }
-                                let mut entry_array = vec![];
-                                entry_array.push(RedisValue::String(entry.get_id().to_string()));
-                                let mut values_array = vec![];
-                                for (k, v) in entry {
-                                    values_array.push(RedisValue::String(k.clone()));
-                                    values_array.push(RedisValue::String(v.clone()));
-                                }
-                                entry_array.push(RedisValue::Array(values_array));
-                                entries_array.push(RedisValue::Array(entry_array));
+                        for i in 0..(args.len() - 2) / 2 {
+                            let stream_name = args[2+i].get_string()?;
+                            let entry_id = args[args.len() / 2 + 1 + i].get_string()?;
+                            if !re.is_match(&entry_id) {
+                                return Err(anyhow!("Bad format for stream id. Line {}", line!()))
                             }
+                            let mut entry_id_split = entry_id.split('-');
+                            let entry_milliseconds = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
+                            let entry_sequence = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
+                            let db = self.db.read().await;
+    
+                            let mut stream_array = vec![];
+                            stream_array.push(RedisValue::String(stream_name.clone()));
+    
+                            let mut entries_array = vec![];
+    
+                            if let Some(record) = db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
+                                for entry in stream_record {
+                                    let mut entry_id = entry.get_id().split('-');
+                                    let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                                    let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                                    if entry_millis < entry_milliseconds || entry_millis == entry_milliseconds && entry_seq < entry_sequence {
+                                        continue;
+                                    }
+                                    let mut entry_array = vec![];
+                                    entry_array.push(RedisValue::String(entry.get_id().to_string()));
+                                    let mut values_array = vec![];
+                                    for (k, v) in entry {
+                                        values_array.push(RedisValue::String(k.clone()));
+                                        values_array.push(RedisValue::String(v.clone()));
+                                    }
+                                    entry_array.push(RedisValue::Array(values_array));
+                                    entries_array.push(RedisValue::Array(entry_array));
+                                }
+                            }
+                            stream_array.push(RedisValue::Array(entries_array));
+                            response_array.push(RedisValue::Array(stream_array));
                         }
-                        stream_array.push(RedisValue::Array(entries_array));
-                        response_array.push(RedisValue::Array(stream_array));
                         RedisValue::Array(response_array).encode()
                     }
                 }
