@@ -532,8 +532,10 @@ impl ClientHandler {
                 } else {
                     let stream_name = args[1].get_string()?;
                     let re = Regex::new(r"^\d+(-\d+)?$").unwrap();
-                    let lower_end = args[2].get_string()?;
-                    let higher_end = args[3].get_string()?;
+                    let mut lower_end = args[2].get_string()?;
+                    if lower_end == "-" { lower_end = "0".to_string() }
+                    let mut higher_end = args[3].get_string()?;
+                    if higher_end == "+" { higher_end = format!("{}", usize::MAX) }
                     if !re.is_match(&lower_end) {
                         return Err(anyhow!("Bad format for stream id in range's lower end. Line {}", line!()))
                     }
