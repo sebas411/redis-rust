@@ -782,6 +782,19 @@ impl ClientHandler {
                     RedisValue::String("OK".to_string()).as_simple_string()?
                 }
             },
+            "DISCARD" => {
+                if args.len() != 1 {
+                    RedisValue::Error("Err wrong number of arguments for 'DISCARD' command".to_string()).encode()
+                } else {
+                    if self.multi_mode {
+                        self.multi_mode = false;
+                        self.queued_commands = vec![];
+                        RedisValue::String("OK".to_string()).as_simple_string()?
+                    } else {
+                        RedisValue::Error("ERR DISCARD without MULTI".to_string()).encode()
+                    }
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
