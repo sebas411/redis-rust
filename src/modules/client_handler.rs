@@ -736,12 +736,15 @@ impl ClientHandler {
                     let key = args[1].get_string()?;
                     let mut new_value = 0;
                     let mut db = self.db.write().await;
+                    let mut error = None;
                     match db.get_mut(&key) {
                         Some(value) => {
                             if let DbRecord::String(value) = value {
                                 if let Ok(number) = i64::from_str_radix(&value.get_value().get_string()?, 10) {
                                     new_value = number + 1;
                                     value.set_value(RedisValue::String(format!("{}", new_value)));
+                                }  else {
+                                    error = Some("ERR value is not an integer or out of range");
                                 }
                             }
                         },
@@ -750,7 +753,11 @@ impl ClientHandler {
                             new_value = 1;
                         }
                     }
-                    RedisValue::Int(new_value).encode()
+                    if let Some(error) = error {
+                        RedisValue::Error(format!("{}", error)).encode()
+                    } else {
+                        RedisValue::Int(new_value).encode()
+                    }
                 }
             }
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
