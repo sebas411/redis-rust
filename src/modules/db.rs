@@ -81,17 +81,38 @@ impl StringRecord {
     }
 }
 
-pub struct StreamRecord(Vec<StreamEntry>);
+pub struct StreamRecord {
+    entries: Vec<StreamEntry>,
+    waiters: VecDeque<UnboundedSender<StreamEntry>>,
+}
 
 impl StreamRecord {
-    pub fn new(entry: StreamEntry) -> Self {
-        Self(vec![entry])
+    pub fn new() -> Self {
+        Self { entries: vec![], waiters: VecDeque::new() }
     }
     pub fn push(&mut self, entry: StreamEntry) {
-        self.0.push(entry);
+        let mut to_remove = vec![];
+        for i in 0..self.waiters.len() {
+            if let Some(waiter) = self.waiters.get(i) {
+                let result = waiter.send(entry.clone());
+                if result.is_err() {
+                    to_remove.push(i);
+                }
+            }
+        }
+        for rem in to_remove {
+            self.waiters.remove(rem);
+        }
+        self.entries.push(entry);
     }
-    pub fn peek_last(&self) -> &StreamEntry {
-        self.0.last().unwrap()
+    pub fn subscribe_waiter(&mut self, waiter: UnboundedSender<StreamEntry>) {
+        self.waiters.push_back(waiter);
+    }
+    pub fn peek_last(&self) -> StreamEntry {
+        match self.entries.last() {
+            None => StreamEntry::new("0-0", None),
+            Some(entry) => entry.clone(),
+        }
     }
 }
 
@@ -100,10 +121,11 @@ impl<'a> IntoIterator for &'a StreamRecord {
     type IntoIter = std::slice::Iter<'a, StreamEntry>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.entries.iter()
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct StreamEntry {
     id: String,
     kv: HashMap<String, String>,

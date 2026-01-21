@@ -475,9 +475,10 @@ impl ClientHandler {
                         match db.get_mut(&stream_name) {
                             Some(record) => {
                                 if let Some(stream_record) = record.get_mut_stream() {
-                                    let mut last_id = stream_record.peek_last().get_id().split("-");
-                                    let last_milli = i64::from_str_radix(last_id.next().unwrap(), 10).unwrap();
-                                    let last_seq = i64::from_str_radix(last_id.next().unwrap(), 10).unwrap();
+                                    let last_id = stream_record.peek_last();
+                                    let mut last_id_split = last_id.get_id().split("-");
+                                    let last_milli = i64::from_str_radix(last_id_split.next().unwrap(), 10).unwrap();
+                                    let last_seq = i64::from_str_radix(last_id_split.next().unwrap(), 10).unwrap();
                                     if milliseconds_str == "*" {
                                         let now = SystemTime::now();
                                         let since_epoch = now.duration_since(UNIX_EPOCH).unwrap();
@@ -514,7 +515,9 @@ impl ClientHandler {
                                 }
                                 entry_id = format!("{}-{}", milliseconds, sequence);
                                 let stream_entry = StreamEntry::new(&entry_id, Some(values));
-                                let record = DbRecord::Stream(StreamRecord::new(stream_entry));
+                                let mut stream_record = StreamRecord::new();
+                                stream_record.push(stream_entry);
+                                let record = DbRecord::Stream(stream_record);
                                 db.insert(stream_name, record);
                             }
                         }
@@ -592,33 +595,46 @@ impl ClientHandler {
                 if args.len() < 4 {
                     RedisValue::Error("Err wrong number of arguments for 'XRANGE' command".to_string()).encode()
                 } else {
-                    if args[1].get_string()?.to_lowercase() != "streams" {
-                        RedisValue::Error("Err XREAD only compatible with STREAMS".to_string()).encode()
+                    let re = Regex::new(r"^\d+-\d+$").unwrap();
+                    let mut response_array = vec![];
+                    let mut reached_deadline = false;
+                    let is_blocked;
+                    let block_args;
+                    let block_timeout;
+                    if args[1].get_string()?.to_lowercase() == "block" {
+                        is_blocked = true;
+                        block_args = 2;
+                        block_timeout = u64::from_str_radix(&args[2].get_string()?, 10)?;
+                    } else if args[1].get_string()?.to_lowercase() == "streams" {
+                        is_blocked = false;
+                        block_args = 0;
+                        block_timeout = 0;
                     } else {
-                        let re = Regex::new(r"^\d+-\d+$").unwrap();
-                        let mut response_array = vec![];
-                        for i in 0..(args.len() - 2) / 2 {
-                            let stream_name = args[2+i].get_string()?;
-                            let entry_id = args[args.len() / 2 + 1 + i].get_string()?;
-                            if !re.is_match(&entry_id) {
-                                return Err(anyhow!("Bad format for stream id. Line {}", line!()))
-                            }
-                            let mut entry_id_split = entry_id.split('-');
-                            let entry_milliseconds = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
-                            let entry_sequence = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
+                        return Err(anyhow!("XREAD only compatible with STREAMS"));
+                    }
+                    for i in 0..(args.len() - block_args - 2) / 2 {
+                        let stream_name = args[2+i+block_args].get_string()?;
+                        let entry_id = args[(args.len() - block_args) / 2 + 1 + i + block_args].get_string()?;
+                        if !re.is_match(&entry_id) {
+                            return Err(anyhow!("Bad format for stream id. Line {}", line!()))
+                        }
+                        let mut entry_id_split = entry_id.split('-');
+                        let entry_milliseconds = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
+                        let entry_sequence = usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
+                        
+                        let mut stream_array = vec![];
+                        stream_array.push(RedisValue::String(stream_name.clone()));
+                        
+                        let mut entries_array = vec![];
+                        
+                        {
                             let db = self.db.read().await;
-    
-                            let mut stream_array = vec![];
-                            stream_array.push(RedisValue::String(stream_name.clone()));
-    
-                            let mut entries_array = vec![];
-    
                             if let Some(record) = db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
                                 for entry in stream_record {
                                     let mut entry_id = entry.get_id().split('-');
                                     let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
                                     let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
-                                    if entry_millis < entry_milliseconds || entry_millis == entry_milliseconds && entry_seq < entry_sequence {
+                                    if entry_millis < entry_milliseconds || entry_millis == entry_milliseconds && entry_seq <= entry_sequence {
                                         continue;
                                     }
                                     let mut entry_array = vec![];
@@ -632,9 +648,68 @@ impl ClientHandler {
                                     entries_array.push(RedisValue::Array(entry_array));
                                 }
                             }
-                            stream_array.push(RedisValue::Array(entries_array));
-                            response_array.push(RedisValue::Array(stream_array));
                         }
+                        if is_blocked && entries_array.is_empty() {
+                            let (sender, mut receiver) = unbounded_channel();
+                            {
+                                let mut db = self.db.write().await;
+                                if db.contains_key(&stream_name) {
+                                    let record = db.get_mut(&stream_name).unwrap();
+                                    if let Some(stream_record) = record.get_mut_stream() {
+                                        stream_record.subscribe_waiter(sender);
+                                    }
+                                } else {
+                                    let mut stream_record = StreamRecord::new();
+                                    stream_record.subscribe_waiter(sender);
+                                    db.insert(stream_name, DbRecord::Stream(stream_record));
+                                }
+                            }
+                            // wait for value
+                            let mut value = None;
+                            if block_timeout == 0 {
+                                value = receiver.recv().await;
+                            } else {
+                                let deadline = time::sleep(Duration::from_millis(block_timeout));
+                                tokio::pin!(deadline);
+                                loop {
+                                    tokio::select! {
+                                        msg = receiver.recv() => {
+                                            if let Some(entry) = &msg {
+                                                let mut entry_id = entry.get_id().split('-');
+                                                let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                                                let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                                                if entry_millis > entry_milliseconds || entry_millis == entry_milliseconds && entry_seq > entry_sequence {
+                                                    value = msg;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        _ = &mut deadline => {
+                                            reached_deadline = true;
+                                            break;
+                                        }
+                                    }
+
+                                }
+                            }
+                            if let Some(entry) = value {
+                                let mut entry_array = vec![];
+                                entry_array.push(RedisValue::String(entry.get_id().to_string()));
+                                let mut values_array = vec![];
+                                for (k, v) in &entry {
+                                    values_array.push(RedisValue::String(k.clone()));
+                                    values_array.push(RedisValue::String(v.clone()));
+                                }
+                                entry_array.push(RedisValue::Array(values_array));
+                                entries_array.push(RedisValue::Array(entry_array));
+                            }
+                        }
+                        stream_array.push(RedisValue::Array(entries_array));
+                        response_array.push(RedisValue::Array(stream_array));
+                    }
+                    if reached_deadline {
+                        RedisValue::NullArray.encode()
+                    } else {
                         RedisValue::Array(response_array).encode()
                     }
                 }
