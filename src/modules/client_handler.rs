@@ -7,6 +7,7 @@ use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, unbounded_c
 use crate::modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
+const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
 
 pub struct ClientHandler {
     id: u32,
@@ -67,6 +68,10 @@ impl ClientHandler {
     }
 
     async fn handle_commands(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
+        if self.multi_mode && !TRANSACTION_COMMANDS.contains(&command) {
+            self.queued_commands.push(args);
+            return Ok(RedisValue::String("QUEUED".to_string()).as_simple_string()?);
+        }
         match command {
             "EXEC" => self.exec_queued().await,
             _ => self.execute_command(command, args).await,
