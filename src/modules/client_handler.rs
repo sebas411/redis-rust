@@ -614,7 +614,13 @@ impl ClientHandler {
                     }
                     for i in 0..(args.len() - block_args - 2) / 2 {
                         let stream_name = args[2+i+block_args].get_string()?;
-                        let entry_id = args[(args.len() - block_args) / 2 + 1 + i + block_args].get_string()?;
+                        let mut entry_id = args[(args.len() - block_args) / 2 + 1 + i + block_args].get_string()?;
+                        if entry_id == "$" {
+                            let db = self.db.read().await;
+                            if let Some(record) = db.get(&stream_name) && let Some(stream_record) = record.get_stream() {
+                                entry_id = stream_record.peek_last().get_id().to_string();
+                            }
+                        }
                         if !re.is_match(&entry_id) {
                             return Err(anyhow!("Bad format for stream id. Line {}", line!()))
                         }
