@@ -76,6 +76,10 @@ impl StringRecord {
         true
     }
 
+    pub fn set_value(&mut self, value: RedisValue) {
+        self.value = value;
+    } 
+
     pub fn get_value(&self) -> &RedisValue {
         &self.value
     }

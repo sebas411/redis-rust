@@ -110,8 +110,6 @@ impl ClientHandler {
                         w_db.insert(key, DbRecord::String(record));
                     }
                     RedisValue::String("OK".to_string()).as_simple_string()?
-
-                    
                 }
             },
             "GET" => {
@@ -731,6 +729,30 @@ impl ClientHandler {
                     }
                 }
             },
+            "INCR" => {
+                if args.len() != 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'INCR' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let mut new_value = 0;
+                    let mut db = self.db.write().await;
+                    match db.get_mut(&key) {
+                        Some(value) => {
+                            if let DbRecord::String(value) = value {
+                                if let Ok(number) = i64::from_str_radix(&value.get_value().get_string()?, 10) {
+                                    new_value = number + 1;
+                                    value.set_value(RedisValue::String(format!("{}", new_value)));
+                                }
+                            }
+                        },
+                        None => {
+                            db.insert(key, DbRecord::String(StringRecord::new(RedisValue::String("1".to_string()))));
+                            new_value = 1;
+                        }
+                    }
+                    RedisValue::Int(new_value).encode()
+                }
+            }
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
