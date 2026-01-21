@@ -667,7 +667,18 @@ impl ClientHandler {
                             // wait for value
                             let mut value = None;
                             if block_timeout == 0 {
-                                value = receiver.recv().await;
+                                loop {
+                                    let msg = receiver.recv().await;
+                                    if let Some(entry) = &msg {
+                                        let mut entry_id = entry.get_id().split('-');
+                                        let entry_millis = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                                        let entry_seq = usize::from_str_radix(entry_id.next().unwrap(), 10).unwrap();
+                                        if entry_millis > entry_milliseconds || entry_millis == entry_milliseconds && entry_seq > entry_sequence {
+                                            value = msg;
+                                            break;
+                                        }
+                                    }
+                                }
                             } else {
                                 let deadline = time::sleep(Duration::from_millis(block_timeout));
                                 tokio::pin!(deadline);
