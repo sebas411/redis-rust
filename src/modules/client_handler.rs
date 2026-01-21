@@ -14,12 +14,13 @@ pub struct ClientHandler {
     ps_registry: Arc<RwLock<Registry>>,
     receiver: UnboundedReceiver<Vec<u8>>,
     subscribe_mode: bool,
+    multi_mode: bool,
 }
 
 
 impl ClientHandler {
     pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false }
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false }
     }
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
         println!("Incoming connection from: {}", stream.peer_addr()?);
@@ -759,7 +760,15 @@ impl ClientHandler {
                         RedisValue::Int(new_value).encode()
                     }
                 }
-            }
+            },
+            "MULTI" => {
+                if args.len() != 1 {
+                    RedisValue::Error("Err wrong number of arguments for 'MULTI' command".to_string()).encode()
+                } else {
+                    self.multi_mode = true;
+                    RedisValue::String("OK".to_string()).as_simple_string()?
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
