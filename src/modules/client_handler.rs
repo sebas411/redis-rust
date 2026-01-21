@@ -15,12 +15,13 @@ pub struct ClientHandler {
     receiver: UnboundedReceiver<Vec<u8>>,
     subscribe_mode: bool,
     multi_mode: bool,
+    queued_commands: Vec<Vec<RedisValue>>,
 }
 
 
 impl ClientHandler {
     pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false }
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![] }
     }
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
         println!("Incoming connection from: {}", stream.peer_addr()?);
@@ -66,6 +67,13 @@ impl ClientHandler {
     }
 
     async fn handle_commands(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
+        match command {
+            "EXEC" => self.exec_queued().await,
+            _ => self.execute_command(command, args).await,
+        }
+    }
+
+    async fn execute_command(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
         let response = match command {
             "PING" =>  {
                 if self.subscribe_mode {
@@ -769,21 +777,27 @@ impl ClientHandler {
                     RedisValue::String("OK".to_string()).as_simple_string()?
                 }
             },
-            "EXEC" => {
-                if args.len() != 1 {
-                    RedisValue::Error("Err wrong number of arguments for 'EXEC' command".to_string()).encode()
-                } else {
-                    if self.multi_mode {
-                        self.multi_mode = false;
-                        RedisValue::String("OK".to_string()).as_simple_string()?
-                    } else {
-                        RedisValue::Error("ERR EXEC without MULTI".to_string()).encode()
-                    }
-                }
-            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
     }
-}
 
+    async fn exec_queued(&mut self) -> Result<Vec<u8>> {
+        if self.multi_mode {
+            let mut outputs = vec![];
+            for queued_command in self.queued_commands.clone() {
+                let command = &queued_command[0];
+                let value = self.execute_command(&command.get_string()?, queued_command.clone()).await?;
+                outputs.push(value);
+            }
+            let mut exec_output = format!("*{}\r\n", outputs.len()).as_bytes().to_vec();
+            for output in outputs {
+                exec_output.extend(output);
+            }
+            self.multi_mode = false;
+            Ok(exec_output)
+        } else {
+            Ok(RedisValue::Error("ERR EXEC without MULTI".to_string()).encode())
+        }
+    }
+}
