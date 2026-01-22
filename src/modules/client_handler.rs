@@ -17,12 +17,13 @@ pub struct ClientHandler {
     subscribe_mode: bool,
     multi_mode: bool,
     queued_commands: Vec<Vec<RedisValue>>,
+    role: String,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![] }
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, role: &str) -> Self {
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], role: role.to_string() }
     }
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
         println!("Incoming connection from: {}", stream.peer_addr()?);
@@ -801,7 +802,7 @@ impl ClientHandler {
                 } else {
                     let mut response = String::new();
                     if args.len() == 2 && args[1].get_string()?.to_lowercase() == "replication" {
-                        response.push_str("# Replication\nrole:master");
+                        response.push_str(&format!("# Replication\nrole:{}", self.role));
                     }
                     RedisValue::String(response).encode()
                 }

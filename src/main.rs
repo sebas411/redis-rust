@@ -9,9 +9,13 @@ mod modules;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
-    let port = match args.iter().skip_while(|a| {a != &"--port"}).skip(1).next() {
+    let port = match args.iter().skip_while(|a| a != &"--port").skip(1).next() {
         None => "6379",
         Some(port) => port,
+    };
+    let role = match args.iter().skip_while(|a| a != &"--replicaof").skip(1).next() {
+        None => "master",
+        Some(_) => "slave",
     };
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
     println!("Listening on 127.0.0.1:{}", port);
@@ -43,7 +47,7 @@ async fn main() -> Result<()> {
                         }
                         let ps_registry = Arc::clone(&ps_registry);
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver);
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, role);
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }
