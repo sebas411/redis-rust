@@ -795,6 +795,17 @@ impl ClientHandler {
                     }
                 }
             },
+            "INFO" => {
+                if args.len() > 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'INFO' command".to_string()).encode()
+                } else {
+                    let mut response = String::new();
+                    if args.len() == 2 && args[1].get_string()?.to_lowercase() == "replication" {
+                        response.push_str("# Replication\nrole:master");
+                    }
+                    RedisValue::String(response).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
