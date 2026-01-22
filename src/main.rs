@@ -46,6 +46,9 @@ async fn slave_handshake(rep: &Replica, port: &str) -> Result<()> {
     // REPLCONF capa psync2
     stream.write_all(&RedisValue::array_from_string_vec(vec!["REPLCONF", "capa", "psync2"]).encode()).await?;
     stream.read(&mut buffer).await?;
+    // PSYNC ? -1
+    stream.write_all(&RedisValue::array_from_string_vec(vec!["PSYNC", "?", "-1"]).encode()).await?;
+    stream.read(&mut buffer).await?;
     Ok(())
 }
 
