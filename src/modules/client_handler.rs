@@ -806,9 +806,15 @@ impl ClientHandler {
                         response.push_str(&format!("role:{}\n", self.replica_info.read().await.get_role()));
                         response.push_str(&format!("master_replid:{}\n", self.replica_info.read().await.get_replid()));
                         response.push_str("master_repl_offset:0\n");
-
                     }
                     RedisValue::String(response).encode()
+                }
+            },
+            "REPLCONF" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'REPLCONF' command".to_string()).encode()
+                } else {
+                    RedisValue::String("OK".to_string()).as_simple_string()?
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
