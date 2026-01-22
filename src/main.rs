@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::{sync::Arc};
 use anyhow::Result;
 use tokio::{net::TcpListener, signal, sync::{RwLock, mpsc::unbounded_channel}, task::JoinSet};
 
@@ -8,10 +8,11 @@ mod modules;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut port = "6379".to_string();
-    if let Ok(var_port) = env::var("REDIS_PORT") {
-        port = var_port;
-    }
+    let args = std::env::args().collect::<Vec<_>>();
+    let port = match args.iter().skip_while(|a| {a != &"--port"}).skip(1).next() {
+        None => "6379",
+        Some(port) => port,
+    };
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
     println!("Listening on 127.0.0.1:{}", port);
 
