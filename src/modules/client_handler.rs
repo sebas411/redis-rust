@@ -817,6 +817,13 @@ impl ClientHandler {
                     RedisValue::String("OK".to_string()).as_simple_string()?
                 }
             },
+            "PSYNC" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'PSYNC' command".to_string()).encode()
+                } else {
+                    RedisValue::String(format!("FULLRESYNC {} 0", self.replica_info.read().await.get_replid())).as_simple_string()?
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
