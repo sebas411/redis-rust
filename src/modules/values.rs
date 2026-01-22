@@ -11,6 +11,13 @@ pub enum RedisValue {
 }
 
 impl RedisValue {
+    pub fn array_from_string_vec(array: Vec<&str>) -> RedisValue {
+        let mut redis_value_vec = vec![];
+        for s in array {
+            redis_value_vec.push(RedisValue::String(s.to_string()));
+        }
+        RedisValue::Array(redis_value_vec)
+    }
     pub fn get_string(&self) -> Result<String> {
         if let Self::String(s) = self {
             Ok(s.to_owned())

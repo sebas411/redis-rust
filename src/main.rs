@@ -1,7 +1,7 @@
 use std::{sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::unbounded_channel}, task::JoinSet};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::unbounded_channel}, task::JoinSet};
 
 use crate::modules::{client_handler::ClientHandler, db::{DB, Registry}, values::RedisValue};
 mod modules;
@@ -34,9 +34,18 @@ impl Replica {
     }
 }
 
-async fn slave_handshake(rep: &Replica) -> Result<()> {
+async fn slave_handshake(rep: &Replica, port: &str) -> Result<()> {
     let mut stream = TcpStream::connect(rep.get_address()).await?;
+    let mut buffer = [0; 1024];
+    // PING
     stream.write_all(&RedisValue::Array(vec![RedisValue::String("PING".to_string())]).encode()).await?;
+    stream.read(&mut buffer).await?;
+    // REPLCONF listening-port <port>
+    stream.write_all(&RedisValue::array_from_string_vec(vec!["REPLCONF", "listening-port", port]).encode()).await?;
+    stream.read(&mut buffer).await?;
+    // REPLCONF capa psync2
+    stream.write_all(&RedisValue::array_from_string_vec(vec!["REPLCONF", "capa", "psync2"]).encode()).await?;
+    stream.read(&mut buffer).await?;
     Ok(())
 }
 
@@ -63,7 +72,7 @@ async fn main() -> Result<()> {
     let master_id = generate_random_alphanumeric(40);
     let replica = Replica::new(role, &master_id, &master_address);
     if role == "slave" {
-        slave_handshake(&replica).await?;
+        slave_handshake(&replica, port).await?;
     }
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
     println!("Listening on 127.0.0.1:{}", port);
