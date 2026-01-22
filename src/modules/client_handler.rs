@@ -18,15 +18,15 @@ pub struct ClientHandler {
     multi_mode: bool,
     queued_commands: Vec<Vec<RedisValue>>,
     role: String,
+    master_id: String,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, role: &str) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], role: role.to_string() }
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, role: &str, master_id: &str) -> Self {
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], role: role.to_string(), master_id: master_id.to_string() }
     }
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
-        println!("Incoming connection from: {}", stream.peer_addr()?);
         let mut parser = RedisParser::new(stream);
         loop {
             tokio::select! {
@@ -802,7 +802,11 @@ impl ClientHandler {
                 } else {
                     let mut response = String::new();
                     if args.len() == 2 && args[1].get_string()?.to_lowercase() == "replication" {
-                        response.push_str(&format!("# Replication\nrole:{}", self.role));
+                        response.push_str("# Replication\n");
+                        response.push_str(&format!("role:{}\n", self.role));
+                        response.push_str(&format!("master_replid:{}\n", self.master_id));
+                        response.push_str("master_repl_offset:0\n");
+
                     }
                     RedisValue::String(response).encode()
                 }
