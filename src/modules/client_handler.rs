@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
 
-use crate::modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue};
+use crate::{Replica, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
@@ -17,15 +17,15 @@ pub struct ClientHandler {
     subscribe_mode: bool,
     multi_mode: bool,
     queued_commands: Vec<Vec<RedisValue>>,
-    role: String,
-    master_id: String,
+    replica_info: Arc<RwLock<Replica>>,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, role: &str, master_id: &str) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], role: role.to_string(), master_id: master_id.to_string() }
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<Replica>>) -> Self {
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], replica_info: repl_info }
     }
+
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
         let mut parser = RedisParser::new(stream);
         loop {
@@ -803,8 +803,8 @@ impl ClientHandler {
                     let mut response = String::new();
                     if args.len() == 2 && args[1].get_string()?.to_lowercase() == "replication" {
                         response.push_str("# Replication\n");
-                        response.push_str(&format!("role:{}\n", self.role));
-                        response.push_str(&format!("master_replid:{}\n", self.master_id));
+                        response.push_str(&format!("role:{}\n", self.replica_info.read().await.get_role()));
+                        response.push_str(&format!("master_replid:{}\n", self.replica_info.read().await.get_replid()));
                         response.push_str("master_repl_offset:0\n");
 
                     }
