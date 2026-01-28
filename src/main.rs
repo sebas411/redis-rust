@@ -1,7 +1,7 @@
 use std::{sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::unbounded_channel}, task::JoinSet};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedSender, unbounded_channel}}, task::JoinSet};
 
 use crate::modules::{client_handler::ClientHandler, db::{DB, Registry}, values::RedisValue};
 mod modules;
@@ -10,13 +10,23 @@ fn generate_random_alphanumeric(length: usize) -> String {
     Alphanumeric.sample_string(&mut rng(), length)
 }
 
-struct Replica {
+struct ReplicaDb {
+    senders: Vec<UnboundedSender<Vec<RedisValue>>>
+}
+
+impl ReplicaDb {
+    fn new() -> Self {
+        Self { senders: vec![] }
+    }
+}
+
+struct ReplicaInfo {
     role: String,
     master_replid: String,
     master_address: String,
 }
 
-impl Replica {
+impl ReplicaInfo {
     fn new(role: &str, master_replid: &str, master_address: &str) -> Self {
         Self { role: role.to_string(), master_replid: master_replid.to_string(), master_address: master_address.to_string() }
     }
@@ -34,7 +44,7 @@ impl Replica {
     }
 }
 
-async fn slave_handshake(rep: &Replica, port: &str) -> Result<()> {
+async fn slave_handshake(rep: &ReplicaInfo, port: &str) -> Result<()> {
     let mut stream = TcpStream::connect(rep.get_address()).await?;
     let mut buffer = [0; 1024];
     // PING
@@ -73,7 +83,7 @@ async fn main() -> Result<()> {
         },
     };
     let master_id = generate_random_alphanumeric(40);
-    let replica = Replica::new(role, &master_id, &master_address);
+    let replica = ReplicaInfo::new(role, &master_id, &master_address);
     if role == "slave" {
         slave_handshake(&replica, port).await?;
     }
@@ -83,6 +93,7 @@ async fn main() -> Result<()> {
     let mut handles = JoinSet::new();
     let db = Arc::new(RwLock::new(DB::new()));
     let ps_registry = Arc::new(RwLock::new(Registry::new()));
+    let replicadb = Arc::new(RwLock::new(ReplicaDb::new()));
     let repl_info = Arc::new(RwLock::new(replica));
     let ctrl_c_signal = signal::ctrl_c();
     tokio::pin!(ctrl_c_signal);
@@ -107,9 +118,10 @@ async fn main() -> Result<()> {
                             reg.senders.insert(current_thread_id, sender);
                         }
                         let ps_registry = Arc::clone(&ps_registry);
+                        let replicadb = Arc::clone(&replicadb);
                         let repl_info = Arc::clone(&repl_info);
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info);
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb);
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }

@@ -4,34 +4,36 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{Replica, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
+use crate::{ReplicaDb, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
+const WRITE_COMMANDS: [&str; 2] = ["SET", "DEL"];
 
 pub struct ClientHandler {
     id: u32,
     db: Arc<RwLock<DB>>,
     ps_registry: Arc<RwLock<Registry>>,
     receiver: UnboundedReceiver<Vec<u8>>,
+    instruction_receiver: Option<UnboundedReceiver<Vec<RedisValue>>>,
+    replicas: Arc<RwLock<ReplicaDb>>,
     subscribe_mode: bool,
     multi_mode: bool,
     queued_commands: Vec<Vec<RedisValue>>,
-    replica_info: Arc<RwLock<Replica>>,
-    write_stream: Option<Arc<Mutex<OwnedWriteHalf>>>,
+    replica_info: Arc<RwLock<ReplicaInfo>>,
+    write_stream: Option<Mutex<OwnedWriteHalf>>,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<Replica>>) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], replica_info: repl_info, write_stream: None }
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<ReplicaDb>>) -> Self {
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![],
+            replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb }
     }
 
     async fn send(&mut self, src: &[u8]) -> Result<()>{
         match &self.write_stream {
             Some(stream) => {
-                // Clone Arc reference
-                let stream = stream.clone();
                 // Lock mutex guard
                 let mut stream = stream.lock().await;
                 stream.write(src).await?;
@@ -41,11 +43,20 @@ impl ClientHandler {
         }
     }
 
+    async fn get_instruction(val: Option<&mut UnboundedReceiver<Vec<RedisValue>>>) -> Option<Vec<RedisValue>> {
+        match val {
+            Some(val) => val.recv().await,
+            None => None
+        }
+    }
+
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
         let (read_stream, write_stream) = stream.into_split();
-        self.write_stream = Some(Arc::new(Mutex::new(write_stream)));
+        self.write_stream = Some(Mutex::new(write_stream));
         let mut parser = RedisParser::new(read_stream);
         loop {
+            let receiver = &mut self.receiver;
+            let instruction_receiver = self.instruction_receiver.as_mut();
             tokio::select! {
                 value_read = parser.read_value() => {
                     match value_read {
@@ -72,13 +83,23 @@ impl ClientHandler {
                         },
                     }
                 },
-                message_to_send = self.receiver.recv() => {
+                message_to_send = receiver.recv() => {
                     match message_to_send {
                         None => {
-                           return Err(anyhow!("The internal pipe broke")) 
+                           return Err(anyhow!("The internal pipe broke. Line {}", line!())) 
                         },
                         Some(message) => {
                             self.send(&message).await?;
+                        }
+                    }
+                },
+                instruction_message = Self::get_instruction(instruction_receiver), if instruction_receiver.is_some() => {
+                    match instruction_message {
+                        None => {
+                           return Err(anyhow!("The internal pipe broke. Line {}", line!())) 
+                        },
+                        Some(message) => {
+                            self.send(&RedisValue::Array(message).encode()).await?;
                         }
                     }
                 }
@@ -98,6 +119,16 @@ impl ClientHandler {
     }
 
     async fn execute_command(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
+        // Send to replication replicas
+        if WRITE_COMMANDS.contains(&command) {
+            if !self.replicas.read().await.senders.is_empty() {
+                let replicadb = self.replicas.write().await;
+                for replica in &replicadb.senders {
+                    replica.send(args.clone())?;
+                }
+            }
+        }
+
         let response = match command {
             "PING" =>  {
                 if self.subscribe_mode {
@@ -839,6 +870,14 @@ impl ClientHandler {
                 if args.len() != 3 {
                     RedisValue::Error("Err wrong number of arguments for 'PSYNC' command".to_string()).encode()
                 } else {
+                    // Create communication channels for this replica
+                    let (sender, receiver) = unbounded_channel();
+                    self.instruction_receiver = Some(receiver);
+                    {
+                        let mut replicadb = self.replicas.write().await;
+                        replicadb.senders.push(sender);
+                    }
+
                     let response = RedisValue::String(format!("FULLRESYNC {} 0", self.replica_info.read().await.get_replid())).as_simple_string()?;
                     self.send(&response).await?;
                     let mut content = vec![];
