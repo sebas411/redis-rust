@@ -2,7 +2,7 @@ use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc,
 use anyhow::{Result, anyhow};
 use chrono::{TimeDelta, Utc};
 use regex::Regex;
-use tokio::{net::TcpStream, sync::{RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
+use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
 
 use crate::{Replica, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
@@ -18,16 +18,33 @@ pub struct ClientHandler {
     multi_mode: bool,
     queued_commands: Vec<Vec<RedisValue>>,
     replica_info: Arc<RwLock<Replica>>,
+    write_stream: Option<Arc<Mutex<OwnedWriteHalf>>>,
 }
 
 
 impl ClientHandler {
     pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<Replica>>) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], replica_info: repl_info }
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], replica_info: repl_info, write_stream: None }
+    }
+
+    async fn send(&mut self, src: &[u8]) -> Result<()>{
+        match &self.write_stream {
+            Some(stream) => {
+                // Clone Arc reference
+                let stream = stream.clone();
+                // Lock mutex guard
+                let mut stream = stream.lock().await;
+                stream.write(src).await?;
+                Ok(())
+            },
+            None => Err(anyhow!("No stream to send message to. Line {}", line!())),
+        }
     }
 
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
-        let mut parser = RedisParser::new(stream);
+        let (read_stream, write_stream) = stream.into_split();
+        self.write_stream = Some(Arc::new(Mutex::new(write_stream)));
+        let mut parser = RedisParser::new(read_stream);
         loop {
             tokio::select! {
                 value_read = parser.read_value() => {
@@ -45,11 +62,12 @@ impl ClientHandler {
 
                                 if self.subscribe_mode && !SUBSCRIBE_MODE_COMMANDS.contains(&command.as_str()) {
                                     let response = RedisValue::Error(format!("ERR Can't execute '{}' in subscribed mode", command)).encode();
-                                    parser.send(&response).await?;
+                                    self.send(&response).await?;
+
                                     continue;
                                 }
                                 let response = self.handle_commands(&command, args).await?;
-                                parser.send(&response).await?;
+                                self.send(&response).await?;
                             }
                         },
                     }
@@ -60,7 +78,7 @@ impl ClientHandler {
                            return Err(anyhow!("The internal pipe broke")) 
                         },
                         Some(message) => {
-                            parser.send(&message).await?;
+                            self.send(&message).await?;
                         }
                     }
                 }
@@ -811,7 +829,7 @@ impl ClientHandler {
                 }
             },
             "REPLCONF" => {
-                if args.len() != 3 {
+                if args.len() < 3 {
                     RedisValue::Error("Err wrong number of arguments for 'REPLCONF' command".to_string()).encode()
                 } else {
                     RedisValue::String("OK".to_string()).as_simple_string()?
@@ -821,7 +839,14 @@ impl ClientHandler {
                 if args.len() != 3 {
                     RedisValue::Error("Err wrong number of arguments for 'PSYNC' command".to_string()).encode()
                 } else {
-                    RedisValue::String(format!("FULLRESYNC {} 0", self.replica_info.read().await.get_replid())).as_simple_string()?
+                    let response = RedisValue::String(format!("FULLRESYNC {} 0", self.replica_info.read().await.get_replid())).as_simple_string()?;
+                    self.send(&response).await?;
+                    let mut content = vec![];
+                    let hex_empty_rdb_file = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+                    let raw_content = hex::decode(hex_empty_rdb_file)?;
+                    content.extend(format!("${}\r\n", raw_content.len()).as_bytes());
+                    content.extend(raw_content);
+                    content
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),

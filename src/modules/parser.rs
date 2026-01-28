@@ -1,5 +1,5 @@
 use std::{cmp::max, pin::Pin};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
+use tokio::{io::AsyncReadExt, net::{tcp::{OwnedReadHalf}}};
 
 use anyhow::{Result, anyhow};
 use crate::modules::values::RedisValue;
@@ -16,13 +16,13 @@ fn read_uint(blob: &[u8]) -> Result<usize> {
 }
 
 pub struct RedisParser {
-    stream: TcpStream,
+    stream: OwnedReadHalf,
     buffer: [u8; 1024],
     position: usize,
 }
 
 impl RedisParser {
-    pub fn new(stream: TcpStream) -> Self {
+    pub fn new(stream: OwnedReadHalf) -> Self {
         Self { stream, buffer: [0u8; 1024], position: 0 }
     }
     pub fn read_value(&mut self) -> BoxFuture<'_, Result<RedisValue>> {
@@ -41,10 +41,6 @@ impl RedisParser {
                 _ => Err(anyhow!("Unrecognized value start {}", self.buffer[0]))
             }
         })
-    }
-    pub async fn send(&mut self, content: &[u8]) -> Result<()> {
-        self.stream.write_all(content).await?;
-        Ok(())
     }
     async fn read_blob(&mut self) -> Result<Vec<u8>> {
         loop {
