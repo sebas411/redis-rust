@@ -903,7 +903,8 @@ impl ClientHandler {
                 if args.len() > 3 {
                     RedisValue::Error("Err wrong number of arguments for 'WAIT' command".to_string()).encode()
                 } else {
-                    let n_replicas = usize::from_str_radix(&args[1].get_string()?, 10)?;
+                    let n_replicas = self.replicas.read().await.senders.len();
+                    let n_replicas_expected = usize::from_str_radix(&args[1].get_string()?, 10)?;
                     let timeout_millis = u64::from_str_radix(&args[1].get_string()?, 10)?;
                     let deadline = time::sleep(Duration::from_millis(timeout_millis));
                     tokio::pin!(deadline);
