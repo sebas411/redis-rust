@@ -1,3 +1,4 @@
+use std::fmt;
 use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone)]
@@ -77,5 +78,33 @@ impl RedisValue {
         } else {
             Err(anyhow!("Value type is not a string."))
         }
+    }
+}
+
+impl fmt::Display for RedisValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Array(a) => {
+                write!(f, "[")?;
+                for i in 0..a.len()-1 {
+                    let val = &a[i];
+                    write!(f, "{}, ", val)?;
+                }
+                write!(f, "{}]", a.last().unwrap_or(&RedisValue::NullString))?;
+            },
+            Self::String(s) => {
+                write!(f, "\"{}\"", s)?;
+            },
+            Self::Int(i) => {
+                write!(f, "{}", i)?;
+            },
+            Self::Error(e) => {
+                write!(f, "e\"{}\"", e)?;
+            },
+            _ => {
+                write!(f, "null")?;
+            }
+        }
+        Ok(())
     }
 }

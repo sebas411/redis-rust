@@ -3,7 +3,7 @@ use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedSender, unbounded_channel}}, task::JoinSet};
 
-use crate::modules::{client_handler::ClientHandler, db::{DB, Registry}, values::RedisValue};
+use crate::modules::{client_handler::{ClientHandler}, db::{DB, Registry}, values::RedisValue};
 mod modules;
 
 fn generate_random_alphanumeric(length: usize) -> String {
@@ -44,21 +44,37 @@ impl ReplicaInfo {
     }
 }
 
-async fn slave_handshake(rep: &ReplicaInfo, port: &str) -> Result<()> {
-    let mut stream = TcpStream::connect(rep.get_address()).await?;
+async fn slave_handshake(rep: &Arc<RwLock<ReplicaInfo>>, port: &str, mut client_handler: ClientHandler) -> Result<()> {
+    let mut stream = TcpStream::connect(rep.read().await.get_address()).await?;
     let mut buffer = [0; 1024];
     // PING
     stream.write_all(&RedisValue::Array(vec![RedisValue::String("PING".to_string())]).encode()).await?;
-    stream.read(&mut buffer).await?;
+    //read +PONG
+    stream.read_exact(&mut buffer[0..7]).await?;
+
     // REPLCONF listening-port <port>
     stream.write_all(&RedisValue::array_from_string_vec(vec!["REPLCONF", "listening-port", port]).encode()).await?;
-    stream.read(&mut buffer).await?;
+    //read +OK
+    stream.read_exact(&mut buffer[0..5]).await?;
+
     // REPLCONF capa psync2
     stream.write_all(&RedisValue::array_from_string_vec(vec!["REPLCONF", "capa", "psync2"]).encode()).await?;
-    stream.read(&mut buffer).await?;
+    //read +OK
+    stream.read_exact(&mut buffer[0..5]).await?;
+
     // PSYNC ? -1
     stream.write_all(&RedisValue::array_from_string_vec(vec!["PSYNC", "?", "-1"]).encode()).await?;
-    stream.read(&mut buffer).await?;
+    //read +FULLRESYNC ...
+    stream.read_exact(&mut buffer[0..56]).await?;
+    //read $<n> (to get filesize)
+    stream.read_exact(&mut buffer[0..5]).await?;
+    //read the sync file
+    let filesize = usize::from_str_radix(&String::from_utf8(buffer[1..3].to_vec()).unwrap(), 10).unwrap();
+    let mut buffer = vec![0u8; filesize];
+    stream.read_exact(&mut buffer).await?;
+
+    // call client handler to handle incomming commands
+    client_handler.handle_client_async(stream).await?;
     Ok(())
 }
 
@@ -84,12 +100,9 @@ async fn main() -> Result<()> {
     };
     let master_id = generate_random_alphanumeric(40);
     let replica = ReplicaInfo::new(role, &master_id, &master_address);
-    if role == "slave" {
-        slave_handshake(&replica, port).await?;
-    }
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
     println!("Listening on 127.0.0.1:{}", port);
-
+    
     let mut handles = JoinSet::new();
     let db = Arc::new(RwLock::new(DB::new()));
     let ps_registry = Arc::new(RwLock::new(Registry::new()));
@@ -99,6 +112,23 @@ async fn main() -> Result<()> {
     tokio::pin!(ctrl_c_signal);
     
     let mut current_thread_id = 0u32;
+    if role == "slave" {
+        let db = Arc::clone(&db);
+        let replicadb = Arc::clone(&replicadb);
+        let repl_info = Arc::clone(&repl_info);
+        let repl_info2 = Arc::clone(&repl_info);
+        let (sender, receiver) = unbounded_channel();
+        {
+            let mut reg = ps_registry.write().await;
+            reg.senders.insert(current_thread_id, sender);
+        }
+        let ps_registry = Arc::clone(&ps_registry);
+        let port = port.to_string();
+        handles.spawn(async move {
+            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true);
+            slave_handshake(&repl_info2, &port, client_handler).await.unwrap();
+        });
+    }
     
     loop {
         tokio::select! {
@@ -121,7 +151,7 @@ async fn main() -> Result<()> {
                         let replicadb = Arc::clone(&replicadb);
                         let repl_info = Arc::clone(&repl_info);
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb);
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false);
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }

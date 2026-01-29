@@ -19,6 +19,7 @@ pub struct ClientHandler {
     replicas: Arc<RwLock<ReplicaDb>>,
     subscribe_mode: bool,
     multi_mode: bool,
+    is_replicating: bool,
     queued_commands: Vec<Vec<RedisValue>>,
     replica_info: Arc<RwLock<ReplicaInfo>>,
     write_stream: Option<Mutex<OwnedWriteHalf>>,
@@ -26,17 +27,19 @@ pub struct ClientHandler {
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<ReplicaDb>>) -> Self {
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<ReplicaDb>>, is_replicating: bool) -> Self {
         Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![],
-            replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb }
+            replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating }
     }
 
     async fn send(&mut self, src: &[u8]) -> Result<()>{
         match &self.write_stream {
             Some(stream) => {
-                // Lock mutex guard
-                let mut stream = stream.lock().await;
-                stream.write(src).await?;
+                if !self.is_replicating {
+                    // Lock mutex guard
+                    let mut stream = stream.lock().await;
+                    stream.write(src).await?;
+                }
                 Ok(())
             },
             None => Err(anyhow!("No stream to send message to. Line {}", line!())),
@@ -83,20 +86,20 @@ impl ClientHandler {
                         },
                     }
                 },
-                message_to_send = receiver.recv() => {
+                message_to_send = receiver.recv(), if !self.is_replicating => {
                     match message_to_send {
                         None => {
-                           return Err(anyhow!("The internal pipe broke. Line {}", line!())) 
+                            return Err(anyhow!("The internal pipe broke. Line {}, File {}", line!(), file!())) 
                         },
                         Some(message) => {
                             self.send(&message).await?;
                         }
                     }
                 },
-                instruction_message = Self::get_instruction(instruction_receiver), if instruction_receiver.is_some() => {
+                instruction_message = Self::get_instruction(instruction_receiver), if instruction_receiver.is_some() && !self.is_replicating => {
                     match instruction_message {
                         None => {
-                           return Err(anyhow!("The internal pipe broke. Line {}", line!())) 
+                           return Err(anyhow!("The internal pipe broke. Line {}, File {}", line!(), file!())) 
                         },
                         Some(message) => {
                             self.send(&RedisValue::Array(message).encode()).await?;
