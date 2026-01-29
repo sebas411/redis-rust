@@ -76,10 +76,10 @@ impl RedisParser {
                         continue;
                     } else {
                         //value read, shifting data and updating pointers
+                        self.processed_bytes += p + 2;
                         let blob = self.buffer[..(p+2)].to_vec();
-                        self.processed_bytes = p + 2;
-                        self.buffer.copy_within(self.processed_bytes..self.position, 0);
-                        self.position = max(self.position - self.processed_bytes, 0);
+                        self.buffer.copy_within((p+2)..self.position, 0);
+                        self.position = max(self.position - (p+2), 0);
                         return Ok(blob)
                     }
                 }
@@ -101,6 +101,7 @@ impl RedisParser {
         let blob = self.read_blob().await?;
         let n = read_uint(&blob[1..])?;
         let decoded_string = String::from_utf8(self.buffer[..n].to_vec())?;
+        self.processed_bytes += n + 2;
         self.buffer.copy_within(n+2.., 0);
         self.position = max(0, self.position - (n+2));
         Ok(RedisValue::String(decoded_string))
