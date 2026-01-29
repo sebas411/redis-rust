@@ -899,6 +899,28 @@ impl ClientHandler {
                     content
                 }
             },
+            "WAIT" => {
+                if args.len() > 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'WAIT' command".to_string()).encode()
+                } else {
+                    let n_replicas = usize::from_str_radix(&args[1].get_string()?, 10)?;
+                    let timeout_millis = u64::from_str_radix(&args[1].get_string()?, 10)?;
+                    let deadline = time::sleep(Duration::from_millis(timeout_millis));
+                    tokio::pin!(deadline);
+
+                    async fn check_replicas() {
+                        return;
+                    }
+                    let replicas_done = check_replicas();
+                    tokio::pin!(replicas_done);
+
+                    tokio::select! {
+                        _ = &mut replicas_done => (),
+                        _ = &mut deadline => ()
+                    }
+                    RedisValue::Int(n_replicas as i64).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
