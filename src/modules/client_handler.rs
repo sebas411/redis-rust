@@ -8,7 +8,7 @@ use crate::{ReplicaDb, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Reg
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
-const WRITE_COMMANDS: [&str; 2] = ["SET", "DEL"];
+const WRITE_COMMANDS: [&str; 8] = ["SET", "DEL", "RPUSH", "LPUSH", "LPOP", "BLPOP", "XADD", "INCR"];
 
 pub struct ClientHandler {
     id: u32,
@@ -23,19 +23,20 @@ pub struct ClientHandler {
     queued_commands: Vec<Vec<RedisValue>>,
     replica_info: Arc<RwLock<ReplicaInfo>>,
     write_stream: Option<Mutex<OwnedWriteHalf>>,
+    processed_bytes: usize,
 }
 
 
 impl ClientHandler {
     pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<ReplicaDb>>, is_replicating: bool) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![],
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0,
             replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating }
     }
 
-    async fn send(&mut self, src: &[u8]) -> Result<()>{
+    async fn send(&mut self, src: &[u8], overwrite: bool) -> Result<()>{
         match &self.write_stream {
             Some(stream) => {
-                if !self.is_replicating {
+                if overwrite || !self.is_replicating {
                     // Lock mutex guard
                     let mut stream = stream.lock().await;
                     stream.write(src).await?;
@@ -60,6 +61,7 @@ impl ClientHandler {
         loop {
             let receiver = &mut self.receiver;
             let instruction_receiver = self.instruction_receiver.as_mut();
+            self.processed_bytes = parser.get_processed_bytes();
             tokio::select! {
                 value_read = parser.read_value() => {
                     match value_read {
@@ -76,12 +78,12 @@ impl ClientHandler {
 
                                 if self.subscribe_mode && !SUBSCRIBE_MODE_COMMANDS.contains(&command.as_str()) {
                                     let response = RedisValue::Error(format!("ERR Can't execute '{}' in subscribed mode", command)).encode();
-                                    self.send(&response).await?;
+                                    self.send(&response, false).await?;
 
                                     continue;
                                 }
                                 let response = self.handle_commands(&command, args).await?;
-                                self.send(&response).await?;
+                                self.send(&response, false).await?;
                             }
                         },
                     }
@@ -92,7 +94,7 @@ impl ClientHandler {
                             return Err(anyhow!("The internal pipe broke. Line {}, File {}", line!(), file!())) 
                         },
                         Some(message) => {
-                            self.send(&message).await?;
+                            self.send(&message, false).await?;
                         }
                     }
                 },
@@ -102,7 +104,7 @@ impl ClientHandler {
                            return Err(anyhow!("The internal pipe broke. Line {}, File {}", line!(), file!())) 
                         },
                         Some(message) => {
-                            self.send(&RedisValue::Array(message).encode()).await?;
+                            self.send(&RedisValue::Array(message).encode(), false).await?;
                         }
                     }
                 }
@@ -866,6 +868,12 @@ impl ClientHandler {
                 if args.len() < 3 {
                     RedisValue::Error("Err wrong number of arguments for 'REPLCONF' command".to_string()).encode()
                 } else {
+                    if args[1].get_string()?.to_lowercase() == "getack" {
+                        if !self.is_replicating {
+                            return Ok(RedisValue::Error("Err wrong number of arguments for 'REPLCONF' command".to_string()).encode());
+                        }
+                        self.send(&RedisValue::array_from_string_vec(vec!["REPLCONF", "ACK", &format!("{}", &self.processed_bytes)]).encode(), true).await?;
+                    }
                     RedisValue::String("OK".to_string()).as_simple_string()?
                 }
             },
@@ -882,7 +890,7 @@ impl ClientHandler {
                     }
 
                     let response = RedisValue::String(format!("FULLRESYNC {} 0", self.replica_info.read().await.get_replid())).as_simple_string()?;
-                    self.send(&response).await?;
+                    self.send(&response, false).await?;
                     let mut content = vec![];
                     let hex_empty_rdb_file = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
                     let raw_content = hex::decode(hex_empty_rdb_file)?;

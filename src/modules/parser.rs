@@ -19,11 +19,15 @@ pub struct RedisParser {
     stream: OwnedReadHalf,
     buffer: [u8; 1024],
     position: usize,
+    processed_bytes: usize,
 }
 
 impl RedisParser {
     pub fn new(stream: OwnedReadHalf) -> Self {
-        Self { stream, buffer: [0u8; 1024], position: 0 }
+        Self { stream, buffer: [0u8; 1024], position: 0, processed_bytes: 0}
+    }
+    pub fn get_processed_bytes(&self) -> usize {
+        self.processed_bytes
     }
     pub fn read_value(&mut self) -> BoxFuture<'_, Result<RedisValue>> {
         Box::pin(async move {
@@ -71,9 +75,11 @@ impl RedisParser {
                     if self.buffer[p+1] != b'\n' {
                         continue;
                     } else {
+                        //value read, shifting data and updating pointers
                         let blob = self.buffer[..(p+2)].to_vec();
-                        self.buffer.copy_within(p+2..self.position, 0);
-                        self.position = max(self.position - (p + 2), 0);
+                        self.processed_bytes = p + 2;
+                        self.buffer.copy_within(self.processed_bytes..self.position, 0);
+                        self.position = max(self.position - self.processed_bytes, 0);
                         return Ok(blob)
                     }
                 }
