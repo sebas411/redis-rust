@@ -1,7 +1,7 @@
-use std::{sync::Arc};
+use std::sync::Arc;
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedSender, unbounded_channel}}, task::JoinSet};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
 
 use crate::modules::{client_handler::{ClientHandler}, db::{DB, Registry}, values::RedisValue};
 mod modules;
@@ -10,13 +10,21 @@ fn generate_random_alphanumeric(length: usize) -> String {
     Alphanumeric.sample_string(&mut rng(), length)
 }
 
-struct ReplicaDb {
-    senders: Vec<UnboundedSender<Vec<RedisValue>>>
+struct Replica {
+    instruction_sender: UnboundedSender<Vec<RedisValue>>,
+    ack_receiver: UnboundedReceiver<usize>,
 }
 
-impl ReplicaDb {
-    fn new() -> Self {
-        Self { senders: vec![] }
+impl Replica {
+    fn new(instruction_sender: UnboundedSender<Vec<RedisValue>>, ack_receiver: UnboundedReceiver<usize>) -> Self {
+        Self { instruction_sender, ack_receiver }
+    }
+    fn send(&self, value: Vec<RedisValue>) -> Result<()> {
+        self.instruction_sender.send(value)?;
+        Ok(())
+    }
+    async fn receive(&mut self) -> Option<usize> {
+        self.ack_receiver.recv().await
     }
 }
 
@@ -106,7 +114,7 @@ async fn main() -> Result<()> {
     let mut handles = JoinSet::new();
     let db = Arc::new(RwLock::new(DB::new()));
     let ps_registry = Arc::new(RwLock::new(Registry::new()));
-    let replicadb = Arc::new(RwLock::new(ReplicaDb::new()));
+    let replicadb = Arc::new(RwLock::new(Vec::new()));
     let repl_info = Arc::new(RwLock::new(replica));
     let ctrl_c_signal = signal::ctrl_c();
     tokio::pin!(ctrl_c_signal);

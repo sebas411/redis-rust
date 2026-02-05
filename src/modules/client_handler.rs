@@ -1,10 +1,10 @@
-use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::Arc, time::{SystemTime, UNIX_EPOCH}, usize};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{SystemTime, UNIX_EPOCH}, usize};
 use anyhow::{Result, anyhow};
 use chrono::{TimeDelta, Utc};
 use regex::Regex;
-use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, unbounded_channel}}, time::{self, Duration}};
+use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{ReplicaDb, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
+use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
@@ -16,7 +16,8 @@ pub struct ClientHandler {
     ps_registry: Arc<RwLock<Registry>>,
     receiver: UnboundedReceiver<Vec<u8>>,
     instruction_receiver: Option<UnboundedReceiver<Vec<RedisValue>>>,
-    replicas: Arc<RwLock<ReplicaDb>>,
+    ack_sender: Option<UnboundedSender<usize>>,
+    replicas: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>,
     subscribe_mode: bool,
     multi_mode: bool,
     is_replicating: bool,
@@ -24,13 +25,15 @@ pub struct ClientHandler {
     replica_info: Arc<RwLock<ReplicaInfo>>,
     write_stream: Option<Mutex<OwnedWriteHalf>>,
     processed_bytes: usize,
+    write_bytes: usize,
+    prevent_send: bool,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<ReplicaDb>>, is_replicating: bool) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0,
-            replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating }
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool) -> Self {
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None ,
+            replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false }
     }
 
     async fn send(&mut self, src: &[u8], overwrite: bool) -> Result<()>{
@@ -52,6 +55,53 @@ impl ClientHandler {
             Some(val) => val.recv().await,
             None => None
         }
+    }
+
+    async fn check_replicas(&mut self, replicas_ready: Arc<AtomicUsize>, replicas_expected: usize, timeout_millis: u64) -> Result<()> {
+        let replicas = {
+            let guard = self.replicas.read().await;
+            guard.iter().cloned().collect::<Vec<_>>()
+        };
+        let replica_num = replicas.len();
+        
+        if self.write_bytes == 0 {
+            replicas_ready.store(replica_num, Ordering::Relaxed);
+            return Ok(())
+        }
+        
+        let message = vec![RedisValue::String("REPLCONF".into()), RedisValue::String("GETACK".into()), RedisValue::String("*".into())];
+        
+        let mut handles = vec![];
+        for replica in replicas.into_iter() {
+            let message = message.clone();
+            let replicas_ready = replicas_ready.clone();
+            let expected_bytes = self.write_bytes;
+
+            handles.push(tokio::spawn(async move {
+                let mut r = replica.lock().await;
+                r.send(message).unwrap();
+
+                match time::timeout(Duration::from_millis(timeout_millis), r.receive()).await {
+                    Ok(ack_bytes) => {
+                        let ack_bytes = ack_bytes.unwrap_or_default();
+                        if ack_bytes == expected_bytes {
+                            replicas_ready.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            println!("Ack bytes didn't match the written bytes. Expected: {}, got: {}", expected_bytes, ack_bytes);
+                        }
+                    },
+                    Err(_e) => (),
+                }
+            }));
+        }
+        self.write_bytes += RedisValue::Array(message.clone()).encode().len();
+        for h in handles {
+            let _ = h.await;
+            if replicas_ready.load(Ordering::Relaxed) >= replicas_expected {
+                break;
+            }
+        }
+        Ok(())
     }
 
     pub async fn handle_client_async(&mut self, stream: TcpStream) -> Result<()> {
@@ -82,8 +132,22 @@ impl ClientHandler {
 
                                     continue;
                                 }
-                                let response = self.handle_commands(&command, args).await?;
-                                self.send(&response, false).await?;
+                                let response = self.handle_commands(&command, args.clone()).await?;
+                                // Send to replication replicas
+                                if WRITE_COMMANDS.contains(&command.as_str()) && !self.replicas.read().await.is_empty() {
+                                    let replicadb = self.replicas.read().await;
+                                    for i in 0..replicadb.len() {
+                                        let replica = replicadb.get(i).unwrap().lock().await;
+                                        replica.send(args.clone()).unwrap();
+                                    }
+                                    let processed_bytes = parser.get_processed_bytes();
+                                    self.write_bytes +=  processed_bytes - self.processed_bytes;
+                                }
+                                if !self.prevent_send {
+                                    self.send(&response, false).await?;
+                                } else {
+                                    self.prevent_send = false;
+                                }
                             }
                         },
                     }
@@ -104,7 +168,7 @@ impl ClientHandler {
                            return Err(anyhow!("The internal pipe broke. Line {}, File {}", line!(), file!())) 
                         },
                         Some(message) => {
-                            self.send(&RedisValue::Array(message).encode(), false).await?;
+                            self.send(&RedisValue::Array(message.clone()).encode(), false).await?;
                         }
                     }
                 }
@@ -124,16 +188,7 @@ impl ClientHandler {
     }
 
     async fn execute_command(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
-        // Send to replication replicas
-        if WRITE_COMMANDS.contains(&command) {
-            if !self.replicas.read().await.senders.is_empty() {
-                let replicadb = self.replicas.write().await;
-                for replica in &replicadb.senders {
-                    replica.send(args.clone())?;
-                }
-            }
-        }
-
+        
         let response = match command {
             "PING" =>  {
                 if self.subscribe_mode {
@@ -868,11 +923,26 @@ impl ClientHandler {
                 if args.len() < 3 {
                     RedisValue::Error("Err wrong number of arguments for 'REPLCONF' command".to_string()).encode()
                 } else {
-                    if args[1].get_string()?.to_lowercase() == "getack" {
-                        if !self.is_replicating {
-                            return Ok(RedisValue::Error("Err wrong number of arguments for 'REPLCONF' command".to_string()).encode());
-                        }
-                        self.send(&RedisValue::array_from_string_vec(vec!["REPLCONF", "ACK", &format!("{}", &self.processed_bytes)]).encode(), true).await?;
+                    match args[1].get_string()?.to_lowercase().as_str() {
+                        "getack" => {
+                            if !self.is_replicating {
+                                return Ok(RedisValue::Error("Err cannot answer 'REPLCONF GETACK' request because this is not a replica.".to_string()).encode());
+                            }
+                            self.send(&RedisValue::array_from_string_vec(vec!["REPLCONF", "ACK", &format!("{}", &self.processed_bytes)]).encode(), true).await?;
+                        },
+                        "ack" => {
+                            match &self.ack_sender {
+                                Some(ack_sender) => {
+                                    let ack_bytes = usize::from_str_radix(&args[2].get_string()?, 10)?;
+                                    ack_sender.send(ack_bytes)?;
+                                    self.prevent_send = true;
+                                },
+                                None => {
+                                    return Ok(RedisValue::Error("Err cannot answer 'REPLCONF ACK' request because you are not registered as a replica.".to_string()).encode());
+                                }
+                            }
+                        },
+                        _ => (),
                     }
                     RedisValue::String("OK".to_string()).as_simple_string()?
                 }
@@ -883,16 +953,19 @@ impl ClientHandler {
                 } else {
                     // Create communication channels for this replica
                     let (sender, receiver) = unbounded_channel();
+                    let (ack_sender, ack_receiver) = unbounded_channel();
+                    let replica = Replica::new(sender, ack_receiver);
                     self.instruction_receiver = Some(receiver);
-                    {
-                        let mut replicadb = self.replicas.write().await;
-                        replicadb.senders.push(sender);
-                    }
-
+                    self.ack_sender = Some(ack_sender);
+                    
                     let response = RedisValue::String(format!("FULLRESYNC {} 0", self.replica_info.read().await.get_replid())).as_simple_string()?;
                     self.send(&response, false).await?;
                     let mut content = vec![];
                     let hex_empty_rdb_file = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+                    {
+                        let mut replicadb = self.replicas.write().await;
+                        replicadb.push(Arc::new(Mutex::new(replica)));
+                    }
                     let raw_content = hex::decode(hex_empty_rdb_file)?;
                     content.extend(format!("${}\r\n", raw_content.len()).as_bytes());
                     content.extend(raw_content);
@@ -900,26 +973,17 @@ impl ClientHandler {
                 }
             },
             "WAIT" => {
-                if args.len() > 3 {
+                if args.len() != 3 {
                     RedisValue::Error("Err wrong number of arguments for 'WAIT' command".to_string()).encode()
                 } else {
-                    let n_replicas = self.replicas.read().await.senders.len();
-                    let n_replicas_expected = usize::from_str_radix(&args[1].get_string()?, 10)?;
-                    let timeout_millis = u64::from_str_radix(&args[1].get_string()?, 10)?;
-                    let deadline = time::sleep(Duration::from_millis(timeout_millis));
-                    tokio::pin!(deadline);
+                    let replicas_ready = Arc::new(AtomicUsize::new(0));
+                    let replicas_expected = usize::from_str_radix(&args[1].get_string()?, 10)?;
+                    let timeout_millis = u64::from_str_radix(&args[2].get_string()?, 10)?;
+                    
+                    self.check_replicas(Arc::clone(&replicas_ready), replicas_expected, timeout_millis).await?;
 
-                    async fn check_replicas() {
-                        return;
-                    }
-                    let replicas_done = check_replicas();
-                    tokio::pin!(replicas_done);
-
-                    tokio::select! {
-                        _ = &mut replicas_done => (),
-                        _ = &mut deadline => ()
-                    }
-                    RedisValue::Int(n_replicas as i64).encode()
+                    let replicas_ready = replicas_ready.load(Ordering::Relaxed) as i64;
+                    RedisValue::Int(replicas_ready).encode()
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
