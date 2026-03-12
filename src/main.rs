@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
 
-use crate::modules::{client_handler::{ClientHandler}, db::{DB, Registry}, values::RedisValue};
+use crate::modules::{client_handler::ClientHandler, db::{DB, Registry}, file_handler::FileHandler, values::RedisValue};
 mod modules;
 
 fn generate_random_alphanumeric(length: usize) -> String {
@@ -120,6 +120,16 @@ async fn main() -> Result<()> {
     let repl_info = Arc::new(RwLock::new(replica));
     let ctrl_c_signal = signal::ctrl_c();
     tokio::pin!(ctrl_c_signal);
+
+    // read file if it was provided
+    if let Some(filename) = &dbfilename {
+        let dirname = dir.as_deref().unwrap_or(".");
+        let path = PathBuf::from(dirname).join(filename);
+        let file_handler = FileHandler::new(db.clone());
+        if path.is_file() {
+            file_handler.read_file(path).await?;
+        }
+    }
     
     let mut current_thread_id = 0u32;
     if role == "slave" {

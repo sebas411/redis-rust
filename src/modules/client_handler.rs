@@ -1015,6 +1015,18 @@ impl ClientHandler {
                     RedisValue::array_from_string_vec(response).encode()
                 }
             },
+            "KEYS" => {
+                if args.len() != 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'KEYS' command".to_string()).encode()
+                } else {
+                    let mut response = vec![];
+                    let db = self.db.read().await;
+                    for key in db.keys() {
+                        response.push(key.as_str());
+                    }
+                    RedisValue::array_from_string_vec(response).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
