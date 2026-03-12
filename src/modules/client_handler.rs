@@ -27,13 +27,15 @@ pub struct ClientHandler {
     processed_bytes: usize,
     write_bytes: usize,
     prevent_send: bool,
+    db_dir: Option<String>,
+    db_filename: Option<String>,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool) -> Self {
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None ,
-            replica_info: repl_info, write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false }
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, db_dir: Option<String>, db_filename: Option<String>) -> Self {
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None, replica_info: repl_info,
+            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename }
     }
 
     async fn send(&mut self, src: &[u8], overwrite: bool) -> Result<()>{
@@ -984,6 +986,33 @@ impl ClientHandler {
 
                     let replicas_ready = replicas_ready.load(Ordering::Relaxed) as i64;
                     RedisValue::Int(replicas_ready).encode()
+                }
+            },
+            "CONFIG" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'CONFIG' command".to_string()).encode()
+                } else {
+                    if args[1].get_string()? != "GET" {
+                        return Ok(RedisValue::Error("Expected 'GET' after 'CONFIG'".to_string()).encode())
+                    }
+                    let variable = args[2].get_string()?;
+                    let mut response = vec![];
+                    match variable.as_str() {
+                        "dir" => {
+                            response.push("dir");
+                            if let Some(dirname) = &self.db_dir {
+                                response.push(dirname.as_str());
+                            }
+                        },
+                        "dbfilename" => {
+                            response.push("dbfilename");
+                            if let Some(filename) = &self.db_filename {
+                                response.push(filename.as_str());
+                            }
+                        },
+                        x => response.push(x),
+                    }
+                    RedisValue::array_from_string_vec(response).encode()
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),

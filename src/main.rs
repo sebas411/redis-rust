@@ -93,6 +93,8 @@ async fn main() -> Result<()> {
         None => "6379",
         Some(port) => port,
     };
+    let dir = args.iter().skip_while(|a| a != &"--dir").skip(1).next().cloned();
+    let dbfilename = args.iter().skip_while(|a| a != &"--dbfilename").skip(1).next().cloned();
     let role;
     let master_address;
     match args.iter().skip_while(|a| a != &"--replicaof").skip(1).next() {
@@ -132,8 +134,10 @@ async fn main() -> Result<()> {
         }
         let ps_registry = Arc::clone(&ps_registry);
         let port = port.to_string();
+        let dir = dir.clone();
+        let dbfilename = dbfilename.clone();
         handles.spawn(async move {
-            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true);
+            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, dir, dbfilename);
             slave_handshake(&repl_info2, &port, client_handler).await.unwrap();
         });
     }
@@ -158,8 +162,10 @@ async fn main() -> Result<()> {
                         let ps_registry = Arc::clone(&ps_registry);
                         let replicadb = Arc::clone(&replicadb);
                         let repl_info = Arc::clone(&repl_info);
+                        let dir = dir.clone();
+                        let dbfilename = dbfilename.clone();
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false);
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, dir, dbfilename);
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }
