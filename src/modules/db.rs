@@ -167,11 +167,13 @@ impl SortedSetRecord {
     pub fn new() -> Self {
         Self { set: vec![] }
     }
-    pub fn insert(&mut self, entry: SortedSetEntry) {
+    pub fn insert(&mut self, entry: SortedSetEntry) -> i64 {
         if !self.contains(&entry) {
             let i = self.set.partition_point(|e| e < &entry);
             self.set.insert(i, entry);
+            return 1
         }
+        0
     }
     fn contains(&self, entry: &SortedSetEntry) -> bool {
         for member in &self.set {

@@ -1040,14 +1040,14 @@ impl ClientHandler {
                     let mut db = self.db.write().await;
                     if let Some(record) = db.get_mut(&key) {
                         if let DbRecord::SortedSet(record) = record {
-                            record.insert(entry);
-                            added_members = 1;
+                            let n = record.insert(entry);
+                            added_members = n;
                         }
                     } else {
                         let mut record = SortedSetRecord::new();
-                        record.insert(entry);
+                        let n = record.insert(entry);
                         db.insert(key, DbRecord::SortedSet(record));
-                        added_members = 1;
+                        added_members = n;
                     }
                     RedisValue::Int(added_members).encode()
                 }
