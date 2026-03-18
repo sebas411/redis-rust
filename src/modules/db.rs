@@ -9,6 +9,7 @@ pub enum DbRecord {
     String(StringRecord),
     List(ListRecord),
     Stream(StreamRecord),
+    SortedSet(SortedSetRecord),
 }
 
 impl DbRecord {
@@ -47,6 +48,7 @@ impl DbRecord {
             Self::List(_) => "list".to_string(),
             Self::String(_) => "string".to_string(),
             Self::Stream(_) => "stream".to_string(),
+            Self::SortedSet(_) => "sorted_set".to_string(),
         }
     }
 }
@@ -154,6 +156,52 @@ impl<'a> IntoIterator for &'a StreamEntry {
 
     fn into_iter(self) -> Self::IntoIter {
         self.kv.iter()
+    }
+}
+
+pub struct SortedSetRecord {
+    set: Vec<SortedSetEntry>
+}
+
+impl SortedSetRecord {
+    pub fn new() -> Self {
+        Self { set: vec![] }
+    }
+    pub fn insert(&mut self, entry: SortedSetEntry) {
+        if !self.contains(&entry) {
+            let i = self.set.partition_point(|e| e < &entry);
+            self.set.insert(i, entry);
+        }
+    }
+    fn contains(&self, entry: &SortedSetEntry) -> bool {
+        for member in &self.set {
+            if entry.value == member.value {
+                return true
+            }
+        }
+        false
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SortedSetEntry {
+    value: String,
+    score: f64,
+}
+
+impl SortedSetEntry {
+    pub fn new(value: &str, score: f64) -> Self {
+        Self { value: value.to_string(), score }
+    }
+}
+
+impl PartialOrd for SortedSetEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        if self.score == other.score {
+            Some(self.value.cmp(&other.value))
+        } else {
+            self.score.partial_cmp(&other.score)
+        }
     }
 }
 

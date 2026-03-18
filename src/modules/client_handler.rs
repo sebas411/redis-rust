@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
+use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
@@ -1025,6 +1025,31 @@ impl ClientHandler {
                         response.push(key.as_str());
                     }
                     RedisValue::array_from_string_vec(response).encode()
+                }
+            },
+            "ZADD" => {
+                if args.len() != 4 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZADD' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let score = args[2].get_string()?.parse::<f64>()?;
+                    let member = args[3].get_string()?;
+                    let entry = SortedSetEntry::new(&member, score);
+                    let mut added_members = 0;
+                    
+                    let mut db = self.db.write().await;
+                    if let Some(record) = db.get_mut(&key) {
+                        if let DbRecord::SortedSet(record) = record {
+                            record.insert(entry);
+                            added_members = 1;
+                        }
+                    } else {
+                        let mut record = SortedSetRecord::new();
+                        record.insert(entry);
+                        db.insert(key, DbRecord::SortedSet(record));
+                        added_members = 1;
+                    }
+                    RedisValue::Int(added_members).encode()
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
