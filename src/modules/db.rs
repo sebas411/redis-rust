@@ -171,9 +171,25 @@ impl SortedSetRecord {
         if !self.contains(&entry.value) {
             let i = self.set.partition_point(|e| e < &entry);
             self.set.insert(i, entry);
-            return 1
+            1
+        } else {
+            for member in &mut self.set {
+                if member.value == entry.value {
+                    member.score = entry.score;
+                    break;
+                }
+            }
+            0
         }
-        0
+    }
+    pub fn get(&self, member_name: &str) -> Option<SortedSetEntry> {
+        let mut result = None;
+        for member in &self.set {
+            if member.value == member_name {
+                result = Some(member.clone())
+            }
+        }
+        result
     }
     pub fn len(&self) -> usize {
         self.set.len()
@@ -211,6 +227,9 @@ impl SortedSetEntry {
     }
     pub fn get_value(&self) -> &str {
         &self.value
+    }
+    pub fn get_score(&self) -> f64 {
+        self.score
     }
 }
 

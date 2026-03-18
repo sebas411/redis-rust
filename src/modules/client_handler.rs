@@ -1101,7 +1101,7 @@ impl ClientHandler {
             },
             "ZCARD" => {
                 if args.len() != 2 {
-                    RedisValue::Error("Err wrong number of arguments for 'ZRANK' command".to_string()).encode()
+                    RedisValue::Error("Err wrong number of arguments for 'ZCARD' command".to_string()).encode()
                 } else {
                     let key = args[1].get_string()?;
                     let db = self.db.read().await;
@@ -1109,6 +1109,20 @@ impl ClientHandler {
                         RedisValue::Int(set.len() as i64).encode()
                     } else {
                         RedisValue::Int(0).encode()
+                    }
+                }
+            },
+            "ZSCORE" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZSCORE' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let member_name = args[2].get_string()?;
+                    let db = self.db.read().await;
+                    if let Some(record) = db.get(&key) && let DbRecord::SortedSet(set) = record && let Some(member) = set.get(&member_name) {
+                        RedisValue::String(format!("{}", member.get_score())).encode()
+                    } else {
+                        RedisValue::NullString.encode()
                     }
                 }
             },
