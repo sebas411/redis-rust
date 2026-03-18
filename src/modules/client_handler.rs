@@ -1099,6 +1099,19 @@ impl ClientHandler {
                     }
                 }
             },
+            "ZCARD" => {
+                if args.len() != 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZRANK' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let db = self.db.read().await;
+                    if let Some(record) = db.get(&key) && let DbRecord::SortedSet(set) = record {
+                        RedisValue::Int(set.len() as i64).encode()
+                    } else {
+                        RedisValue::Int(0).encode()
+                    }
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
