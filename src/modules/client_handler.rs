@@ -1052,6 +1052,24 @@ impl ClientHandler {
                     RedisValue::Int(added_members).encode()
                 }
             },
+            "ZRANK" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZRANK' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let member = args[2].get_string()?;
+                    let db = self.db.read().await;
+                    if let Some(record) = db.get(&key) {
+                        if let DbRecord::SortedSet(record) = record && let Some(rank) = record.get_rank(&member) {
+                            RedisValue::Int(rank).encode()
+                        } else {
+                            RedisValue::NullString.encode()
+                        }
+                    } else {
+                        RedisValue::NullString.encode()
+                    }
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)

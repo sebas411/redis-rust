@@ -168,16 +168,24 @@ impl SortedSetRecord {
         Self { set: vec![] }
     }
     pub fn insert(&mut self, entry: SortedSetEntry) -> i64 {
-        if !self.contains(&entry) {
+        if !self.contains(&entry.value) {
             let i = self.set.partition_point(|e| e < &entry);
             self.set.insert(i, entry);
             return 1
         }
         0
     }
-    fn contains(&self, entry: &SortedSetEntry) -> bool {
+    pub fn get_rank(&self, member_name: &str) -> Option<i64> {
+        for (i, member) in self.set.iter().enumerate() {
+            if member.value == member_name {
+                return Some(i as i64);
+            }
+        }
+        None
+    }
+    fn contains(&self, member_name: &str) -> bool {
         for member in &self.set {
-            if entry.value == member.value {
+            if member_name == member.value {
                 return true
             }
         }
