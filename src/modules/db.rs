@@ -182,6 +182,15 @@ impl SortedSetRecord {
             0
         }
     }
+    pub fn remove(&mut self, member_name: &str) -> i64 {
+        match self.set.iter().position(|member| member.value == member_name) {
+            Some(index) => {
+                self.set.remove(index);
+                1
+            }
+            None => 0
+        }
+    }
     pub fn get(&self, member_name: &str) -> Option<SortedSetEntry> {
         let mut result = None;
         for member in &self.set {

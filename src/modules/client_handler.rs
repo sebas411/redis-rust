@@ -1126,6 +1126,21 @@ impl ClientHandler {
                     }
                 }
             },
+            "ZREM" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZREM' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let member_name = args[2].get_string()?;
+                    let mut db = self.db.write().await;
+                    if let Some(record) = db.get_mut(&key) && let DbRecord::SortedSet(set) = record {
+                        let n = set.remove(&member_name);
+                        RedisValue::Int(n).encode()
+                    } else {
+                        RedisValue::Int(0).encode()
+                    }
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
