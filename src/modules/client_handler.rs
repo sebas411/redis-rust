@@ -1070,6 +1070,35 @@ impl ClientHandler {
                     }
                 }
             },
+            "ZRANGE" => {
+                if args.len() != 4 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZRANGE' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let db = self.db.read().await;
+                    if let Some(record) = db.get(&key) && let DbRecord::SortedSet(set) = record {
+                        let mut lower_end = args[2].get_string()?.parse::<i64>()?;
+                        let mut higher_end = args[3].get_string()?.parse::<i64>()?;
+                        if lower_end < 0 {
+                            lower_end = max(lower_end - set.len() as i64, 0);
+                        }
+                        if higher_end < 0 {
+                            higher_end = max(higher_end - set.len() as i64, 0);
+                        } else if higher_end >= set.len() as i64 {
+                            higher_end = set.len() as i64 - 1;
+                        }
+                        if higher_end < lower_end || lower_end >= set.len() as i64 {
+                            RedisValue::Array(vec![]).encode()
+                        } else {
+                            let members = set.get_range(lower_end as usize, higher_end as usize);
+                            let response_array = members.iter().map(|ss| ss.get_value()).collect();
+                            RedisValue::array_from_string_vec(response_array).encode()
+                        }
+                    } else {
+                        RedisValue::Array(vec![]).encode()
+                    }
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)

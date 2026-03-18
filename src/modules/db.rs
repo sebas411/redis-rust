@@ -175,6 +175,9 @@ impl SortedSetRecord {
         }
         0
     }
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
     pub fn get_rank(&self, member_name: &str) -> Option<i64> {
         for (i, member) in self.set.iter().enumerate() {
             if member.value == member_name {
@@ -182,6 +185,9 @@ impl SortedSetRecord {
             }
         }
         None
+    }
+    pub fn get_range(&self, lower_bound: usize, upper_bound: usize) -> Vec<SortedSetEntry> {
+        self.set.iter().cloned().skip(lower_bound).take(upper_bound - lower_bound + 1).collect()
     }
     fn contains(&self, member_name: &str) -> bool {
         for member in &self.set {
@@ -193,7 +199,7 @@ impl SortedSetRecord {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct SortedSetEntry {
     value: String,
     score: f64,
@@ -202,6 +208,9 @@ pub struct SortedSetEntry {
 impl SortedSetEntry {
     pub fn new(value: &str, score: f64) -> Self {
         Self { value: value.to_string(), score }
+    }
+    pub fn get_value(&self) -> &str {
+        &self.value
     }
 }
 
