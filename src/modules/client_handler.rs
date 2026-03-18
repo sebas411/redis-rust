@@ -1080,10 +1080,10 @@ impl ClientHandler {
                         let mut lower_end = args[2].get_string()?.parse::<i64>()?;
                         let mut higher_end = args[3].get_string()?.parse::<i64>()?;
                         if lower_end < 0 {
-                            lower_end = max(lower_end - set.len() as i64, 0);
+                            lower_end = max(lower_end + set.len() as i64, 0);
                         }
                         if higher_end < 0 {
-                            higher_end = max(higher_end - set.len() as i64, 0);
+                            higher_end = max(higher_end + set.len() as i64, 0);
                         } else if higher_end >= set.len() as i64 {
                             higher_end = set.len() as i64 - 1;
                         }
