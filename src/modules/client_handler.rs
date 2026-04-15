@@ -20,6 +20,7 @@ pub struct ClientHandler {
     replicas: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>,
     subscribe_mode: bool,
     multi_mode: bool,
+    watched_keys: Vec<String>,
     is_replicating: bool,
     queued_commands: Vec<Vec<RedisValue>>,
     replica_info: Arc<RwLock<ReplicaInfo>>,
@@ -35,7 +36,7 @@ pub struct ClientHandler {
 impl ClientHandler {
     pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, db_dir: Option<String>, db_filename: Option<String>) -> Self {
         Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None, replica_info: repl_info,
-            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename }
+            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename, watched_keys: vec![] }
     }
 
     async fn send(&mut self, src: &[u8], overwrite: bool) -> Result<()>{
@@ -1141,6 +1142,21 @@ impl ClientHandler {
                     }
                 }
             },
+            "WATCH" => {
+                if args.len() < 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'ZREM' command".to_string()).encode()
+                } else {
+                    if self.multi_mode {
+                        RedisValue::Error("ERR WATCH inside MULTI is not allowed".to_string()).encode()
+                    } else {
+                        for key in &args[1..] {
+                            let key = key.get_string()?;
+                            self.watched_keys.push(key);
+                        }
+                        RedisValue::String("OK".to_string()).as_simple_string()?
+                    }
+                }
+            }
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
