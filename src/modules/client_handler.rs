@@ -7,7 +7,7 @@ use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mut
 use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
-const TRANSACTION_COMMANDS: [&str; 3] = ["MULTI", "EXEC", "DISCARD"];
+const TRANSACTION_COMMANDS: [&str; 4] = ["MULTI", "EXEC", "DISCARD", "WATCH"];
 const WRITE_COMMANDS: [&str; 8] = ["SET", "DEL", "RPUSH", "LPUSH", "LPOP", "BLPOP", "XADD", "INCR"];
 
 pub struct ClientHandler {
