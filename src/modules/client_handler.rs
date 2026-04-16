@@ -20,7 +20,7 @@ pub struct ClientHandler {
     replicas: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>,
     subscribe_mode: bool,
     multi_mode: bool,
-    watched_keys: Vec<String>,
+    watched_keys: Vec<(String, Option<String>)>,
     is_replicating: bool,
     queued_commands: Vec<Vec<RedisValue>>,
     replica_info: Arc<RwLock<ReplicaInfo>>,
@@ -1151,7 +1151,17 @@ impl ClientHandler {
                     } else {
                         for key in &args[1..] {
                             let key = key.get_string()?;
-                            self.watched_keys.push(key);
+                            let db = self.db.read().await;
+                            let value = match db.get(&key) {
+                                Some(DbRecord::String(string_record)) => {
+                                    match string_record.get_value() {
+                                        RedisValue::String(value) => Some(value.clone()),
+                                        _ => None
+                                    }
+                                },
+                                _ => None,
+                            };
+                            self.watched_keys.push((key, value));
                         }
                         RedisValue::String("OK".to_string()).as_simple_string()?
                     }
@@ -1164,6 +1174,23 @@ impl ClientHandler {
 
     async fn exec_queued(&mut self) -> Result<Vec<u8>> {
         if self.multi_mode {
+            for (k, v) in &self.watched_keys {
+                let db = self.db.read().await;
+                let new_value = match db.get(k) {
+                    Some(DbRecord::String(string_record)) => {
+                        match string_record.get_value() {
+                            RedisValue::String(value) => Some(value.clone()),
+                            _ => None
+                        }
+                    },
+                    _ => None
+                };
+                if new_value != *v {
+                    self.multi_mode = false;
+                    self.watched_keys = vec![];
+                    return Ok(RedisValue::NullArray.encode())
+                }
+            }
             let mut outputs = vec![];
             for queued_command in self.queued_commands.clone() {
                 let command = &queued_command[0];
@@ -1175,6 +1202,7 @@ impl ClientHandler {
                 exec_output.extend(output);
             }
             self.multi_mode = false;
+            self.watched_keys = vec![];
             Ok(exec_output)
         } else {
             Ok(RedisValue::Error("ERR EXEC without MULTI".to_string()).encode())
