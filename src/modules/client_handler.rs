@@ -7,7 +7,7 @@ use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mut
 use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
-const TRANSACTION_COMMANDS: [&str; 4] = ["MULTI", "EXEC", "DISCARD", "WATCH"];
+const TRANSACTION_COMMANDS: [&str; 5] = ["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"];
 const WRITE_COMMANDS: [&str; 8] = ["SET", "DEL", "RPUSH", "LPUSH", "LPOP", "BLPOP", "XADD", "INCR"];
 
 pub struct ClientHandler {
@@ -902,6 +902,7 @@ impl ClientHandler {
                     if self.multi_mode {
                         self.multi_mode = false;
                         self.queued_commands = vec![];
+                        self.watched_keys = vec![];
                         RedisValue::String("OK".to_string()).as_simple_string()?
                     } else {
                         RedisValue::Error("ERR DISCARD without MULTI".to_string()).encode()
@@ -1144,7 +1145,7 @@ impl ClientHandler {
             },
             "WATCH" => {
                 if args.len() < 2 {
-                    RedisValue::Error("Err wrong number of arguments for 'ZREM' command".to_string()).encode()
+                    RedisValue::Error("Err wrong number of arguments for 'WATCH' command".to_string()).encode()
                 } else {
                     if self.multi_mode {
                         RedisValue::Error("ERR WATCH inside MULTI is not allowed".to_string()).encode()
@@ -1166,7 +1167,15 @@ impl ClientHandler {
                         RedisValue::String("OK".to_string()).as_simple_string()?
                     }
                 }
-            }
+            },
+            "UNWATCH" => {
+                if args.len() != 1 {
+                    RedisValue::Error("Err wrong number of arguments for 'UNWATCH' command".to_string()).encode()
+                } else {
+                    self.watched_keys = vec![];
+                    RedisValue::String("OK".to_string()).as_simple_string()?
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)
