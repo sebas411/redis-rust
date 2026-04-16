@@ -1197,6 +1197,7 @@ impl ClientHandler {
                 if new_value != *v {
                     self.multi_mode = false;
                     self.watched_keys = vec![];
+                    self.queued_commands = vec![];
                     return Ok(RedisValue::NullArray.encode())
                 }
             }
