@@ -10,7 +10,6 @@ pub enum DbRecord {
     List(ListRecord),
     Stream(StreamRecord),
     SortedSet(SortedSetRecord),
-    Geo(GeoRecord),
 }
 
 impl DbRecord {
@@ -50,7 +49,6 @@ impl DbRecord {
             Self::String(_) => "string".to_string(),
             Self::Stream(_) => "stream".to_string(),
             Self::SortedSet(_) => "sorted_set".to_string(),
-            Self::Geo(_) => "location".to_string(),
         }
     }
 }
@@ -312,18 +310,6 @@ impl ListRecord {
     }
     pub fn subscribe_waiter(&mut self, waiter: UnboundedSender<String>) {
         self.waiters.push_back(waiter);
-    }
-}
-
-pub struct GeoRecord {
-    longitude: f64,
-    latitude: f64,
-    name: String,
-}
-
-impl GeoRecord {
-    pub fn new(longitude: f64, latitude: f64, name: &str) -> Self {
-        Self { longitude, latitude, name: name.to_string() }
     }
 }
 
