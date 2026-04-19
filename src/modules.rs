@@ -3,3 +3,4 @@ pub mod parser;
 pub mod client_handler;
 pub mod db;
 pub mod file_handler;
+pub mod geofunctions;
