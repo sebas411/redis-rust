@@ -8,6 +8,19 @@ const MAX_LONGITUDE: f64 = 180.0;
 const LATITUDE_RANGE: f64 = MAX_LATITUDE - MIN_LATITUDE;
 const LONGITUDE_RANGE: f64 = MAX_LONGITUDE - MIN_LONGITUDE;
 
+const EARTH_RADIUS: f64 = 6372797.560856;
+
+pub fn get_distance(x_lon: f64, x_lat: f64, y_lon: f64, y_lat: f64) -> f64 {
+    let x_lat = x_lat.to_radians();
+    let y_lat = y_lat.to_radians();
+    let delta_lon = (y_lon - x_lon).to_radians();
+    let delta_lat = y_lat - x_lat;
+
+    let a = (delta_lat/2.0).sin().powi(2) + x_lat.cos() * y_lat.cos() * (delta_lon/2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0-a).sqrt());
+    EARTH_RADIUS * c
+}
+
 pub fn location_to_score(latitude: f64, longitude: f64) -> f64 {
     let normalized_latitude = (NORMALIZATION_FACTOR * (latitude - MIN_LATITUDE) / LATITUDE_RANGE) as u32;
     let normalized_longitude = (NORMALIZATION_FACTOR * (longitude - MIN_LONGITUDE) / LONGITUDE_RANGE) as u32;

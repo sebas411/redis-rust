@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
+use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{get_distance, location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 5] = ["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"];
@@ -1233,6 +1233,29 @@ impl ClientHandler {
                         }
                     }
                     RedisValue::Array(responses).encode()
+                }
+            },
+            "GEODIST" => {
+                if args.len() != 4 {
+                    RedisValue::Error("Err wrong number of arguments for 'GEODIST' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let x_member = args[2].get_string()?;
+                    let y_member = args[3].get_string()?;
+                    let db = self.db.read().await;
+                    match db.get(&key) {
+                        Some(DbRecord::SortedSet(record)) => {
+                            if let Some(x_entry) = record.get(&x_member) && let Some(y_entry) = record.get(&y_member) {
+                                let (x_lat, x_lon) = score_to_location(x_entry.get_score());
+                                let (y_lat, y_lon) = score_to_location(y_entry.get_score());
+                                let distance = get_distance(x_lon, x_lat, y_lon, y_lat);
+                                RedisValue::String(format!("{}", distance)).encode()
+                            } else {
+                                RedisValue::String("".to_string()).encode()
+                            }
+                        }
+                        _ => RedisValue::String("".to_string()).encode()
+                    }
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
