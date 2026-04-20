@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::location_to_score, parser::RedisParser, values::RedisValue}};
+use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 5] = ["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"];
@@ -1208,6 +1208,31 @@ impl ClientHandler {
                         RedisValue::Int(1).encode()
                     }
 
+                }
+            },
+            "GEOPOS" => {
+                if args.len() < 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'GEOPOS' command".to_string()).encode()
+                } else {
+                    let key = args[1].get_string()?;
+                    let mut responses = vec![];
+                    for member in &args[2..] {
+                        let member = member.get_string()?;
+                        let db = self.db.read().await;
+                        match db.get(&key) {
+                            Some(DbRecord::SortedSet(set)) => {
+                                if let Some(entry) = set.get(&member) {
+                                    let score = entry.get_score();
+                                    let (latitude, longitude) = score_to_location(score);
+                                    responses.push(RedisValue::array_from_string_vec(vec![&format!("{}", longitude), &format!("{}", latitude)]));
+                                } else {
+                                    responses.push(RedisValue::NullArray);
+                                }
+                            }
+                            _ => responses.push(RedisValue::NullArray)
+                        }
+                    }
+                    RedisValue::Array(responses).encode()
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
