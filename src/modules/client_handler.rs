@@ -1258,6 +1258,46 @@ impl ClientHandler {
                     }
                 }
             },
+            "GEOSEARCH" => {
+                if args.len() != 8 {
+                    RedisValue::Error("Err wrong number of arguments for 'GEOSEARCH' command".to_string()).encode()
+                } else {
+                    if args[2].get_string()?.to_uppercase() != "FROMLONLAT" || args[5].get_string()?.to_uppercase() != "BYRADIUS" {
+                        return Ok(RedisValue::Error("Err 'GEOSEARCH' command only supports FROMLONLAT and BYRADIUS options".to_string()).encode())
+                    }
+                    let key = args[1].get_string()?;
+                    let longitude = args[3].get_string()?.parse()?;
+                    let latitude = args[4].get_string()?.parse()?;
+
+                    let mut distance = args[6].get_string()?.parse::<f64>()?;
+                    let unit = args[7].get_string()?;
+                    match unit.as_str() {
+                        "m" => (),
+                        "km" => distance *= 1000.0,
+                        "mi" => distance *= 1609.34,
+                        "ft" => distance /= 3.28084,
+                        "yd" => distance /= 1.09391,
+                        _ => return Ok(RedisValue::Error("Err distance unit not supported".to_string()).encode())
+                    }
+
+                    let mut responses = vec![];
+                    let db = self.db.read().await;
+                    match db.get(&key) {
+                        Some(DbRecord::SortedSet(record)) => {
+                            for entry in record {
+                                let entry_score = entry.get_score();
+                                let (entry_lat, entry_lon) = score_to_location(entry_score);
+                                let entry_distance = get_distance(longitude, latitude, entry_lon, entry_lat);
+                                if entry_distance <= distance {
+                                    responses.push(RedisValue::String(entry.get_value().to_string()));
+                                }
+                            }
+                        }
+                        _ => ()
+                    }
+                    RedisValue::Array(responses).encode()
+                }
+            },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
         };
         Ok(response)

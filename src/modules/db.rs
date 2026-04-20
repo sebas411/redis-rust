@@ -224,6 +224,15 @@ impl SortedSetRecord {
     }
 }
 
+impl<'a> IntoIterator for &'a SortedSetRecord {
+    type Item = &'a SortedSetEntry;
+    type IntoIter = std::slice::Iter<'a, SortedSetEntry>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.set.iter()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct SortedSetEntry {
     value: String,
