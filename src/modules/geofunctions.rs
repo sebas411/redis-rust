@@ -15,8 +15,8 @@ pub fn location_to_score(latitude: f64, longitude: f64) -> f64 {
 }
 
 pub fn score_to_location(score: f64) -> (f64, f64) {
-    let x = score as u64 >> 1;
-    let y = score as u64;
+    let y = score as u64 >> 1;
+    let x = score as u64;
     let grid_latitude_number = compact_u64_to_u32(x);
     let grid_longitude_number = compact_u64_to_u32(y);
 
