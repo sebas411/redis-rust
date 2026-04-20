@@ -1191,7 +1191,7 @@ impl ClientHandler {
                     if longitude < -180.0 || longitude > 180.0 || latitude < -85.05112878 || latitude > 85.05112878 {
                         RedisValue::Error(format!("ERR invalid longitude,latitude pair {:.6},{}", longitude, latitude)).encode()
                     } else {
-                        let entry = SortedSetEntry::new(&name, location_to_score(longitude, latitude));
+                        let entry = SortedSetEntry::new(&name, location_to_score(latitude, longitude));
                         let mut db = self.db.write().await;
                         match db.get_mut(&key) {
                             Some(record) => {
