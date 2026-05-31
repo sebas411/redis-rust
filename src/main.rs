@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
@@ -8,6 +8,21 @@ mod modules;
 
 fn generate_random_alphanumeric(length: usize) -> String {
     Alphanumeric.sample_string(&mut rng(), length)
+}
+
+struct User {
+    name: String,
+    flags: Vec<String>,
+}
+
+impl User {
+    pub fn new(name: &str) -> Self {
+        Self { name: name.to_string(), flags: Vec::new() }
+    }
+    pub fn get_info(&self) -> RedisValue {
+        let flags = RedisValue::array_from_string_vec(self.flags.iter().map(|s| s.as_str()).collect());
+        RedisValue::Array(vec![RedisValue::String("flags".to_string()), flags])
+    }
 }
 
 struct Replica {
@@ -110,6 +125,9 @@ async fn main() -> Result<()> {
     };
     let master_id = generate_random_alphanumeric(40);
     let replica = ReplicaInfo::new(role, &master_id, &master_address);
+    let default_user = User::new("default");
+    let users = Arc::new(RwLock::new(HashMap::new()));
+    users.write().await.insert("default".to_string(), default_user);
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
     println!("Listening on 127.0.0.1:{}", port);
     
@@ -146,8 +164,9 @@ async fn main() -> Result<()> {
         let port = port.to_string();
         let dir = dir.clone();
         let dbfilename = dbfilename.clone();
+        let users = Arc::clone(&users);
         handles.spawn(async move {
-            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, dir, dbfilename);
+            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, dir, dbfilename, users);
             slave_handshake(&repl_info2, &port, client_handler).await.unwrap();
         });
     }
@@ -172,10 +191,11 @@ async fn main() -> Result<()> {
                         let ps_registry = Arc::clone(&ps_registry);
                         let replicadb = Arc::clone(&replicadb);
                         let repl_info = Arc::clone(&repl_info);
+                        let users = Arc::clone(&users);
                         let dir = dir.clone();
                         let dbfilename = dbfilename.clone();
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, dir, dbfilename);
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, dir, dbfilename, users);
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }

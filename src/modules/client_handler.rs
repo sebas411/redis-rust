@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{Replica, ReplicaInfo, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{get_distance, location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
+use crate::{Replica, ReplicaInfo, User, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{get_distance, location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 5] = ["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"];
@@ -30,13 +30,16 @@ pub struct ClientHandler {
     prevent_send: bool,
     db_dir: Option<String>,
     db_filename: Option<String>,
+    users: Arc<RwLock<HashMap<String, User>>>,
+    current_user: Option<String>,
 }
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, db_dir: Option<String>, db_filename: Option<String>) -> Self {
+    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, db_dir: Option<String>, db_filename: Option<String>, users: Arc<RwLock<HashMap<String, User>>>) -> Self {
+        let current_user = Some("default".to_string());
         Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None, replica_info: repl_info,
-            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename, watched_keys: vec![] }
+            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename, watched_keys: vec![], users, current_user }
     }
 
     async fn send(&mut self, src: &[u8], overwrite: bool) -> Result<()>{
@@ -1296,6 +1299,27 @@ impl ClientHandler {
                         _ => ()
                     }
                     RedisValue::Array(responses).encode()
+                }
+            },
+            "ACL" => {
+                if args.len() < 2 {
+                    RedisValue::Error("Err wrong number of arguments for 'ACL' command".to_string()).encode()
+                } else {
+                    let acl_command = args[1].get_string()?;
+                    let mut response = RedisValue::NullString;
+                    match acl_command.as_str() {
+                        "WHOAMI" => {
+                            if let Some(user) = &self.current_user {
+                                response = RedisValue::String(user.to_string())
+                            }
+                        },
+                        "GETUSER" => {
+                            let user_req = args[2].get_string()?;
+                            response = self.users.read().await.get(&user_req).unwrap().get_info();
+                        },
+                        _ => ()
+                    }
+                    response.encode()
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
