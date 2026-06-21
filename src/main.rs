@@ -13,15 +13,20 @@ fn generate_random_alphanumeric(length: usize) -> String {
 struct User {
     name: String,
     flags: Vec<String>,
+    passwords: Vec<String>,
 }
 
 impl User {
     pub fn new(name: &str) -> Self {
-        Self { name: name.to_string(), flags: Vec::new() }
+        Self { name: name.to_string(), flags: Vec::new(), passwords: Vec::new() }
     }
     pub fn get_info(&self) -> RedisValue {
         let flags = RedisValue::array_from_string_vec(self.flags.iter().map(|s| s.as_str()).collect());
-        RedisValue::Array(vec![RedisValue::String("flags".to_string()), flags])
+        let passwords = RedisValue::array_from_string_vec(self.passwords.iter().map(|s| s.as_str()).collect());
+        RedisValue::Array(vec![RedisValue::String("flags".to_string()), flags, RedisValue::String("passwords".to_string()), passwords])
+    }
+    pub fn add_flag(&mut self, flag: &str) {
+        self.flags.push(flag.to_string());
     }
 }
 
@@ -125,7 +130,8 @@ async fn main() -> Result<()> {
     };
     let master_id = generate_random_alphanumeric(40);
     let replica = ReplicaInfo::new(role, &master_id, &master_address);
-    let default_user = User::new("default");
+    let mut default_user = User::new("default");
+    default_user.add_flag("nopass");
     let users = Arc::new(RwLock::new(HashMap::new()));
     users.write().await.insert("default".to_string(), default_user);
     let listener = TcpListener::bind(&format!("127.0.0.1:{}", port)).await?;
