@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, slice::Iter, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
@@ -8,6 +8,14 @@ mod modules;
 
 fn generate_random_alphanumeric(length: usize) -> String {
     Alphanumeric.sample_string(&mut rng(), length)
+}
+
+fn hash_password(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(password);
+    let result = hasher.finalize();
+    let password_hash = hex::encode(result);
+    password_hash
 }
 
 struct User {
@@ -29,11 +37,7 @@ impl User {
         self.flags.push(flag.to_string());
     }
     pub fn add_password(&mut self, password: &str) {
-        let mut hasher = Sha256::new();
-        hasher.update(password);
-        let result = hasher.finalize();
-        let password_hash = hex::encode(result);
-
+        let password_hash = hash_password(password);
         self.passwords.push(password_hash);
 
         for i in 0..self.flags.len() {
@@ -42,6 +46,12 @@ impl User {
                 break;
             }
         }
+    }
+    pub fn password_iter(&self) -> Iter<'_, String> {
+        self.passwords.iter()
+    }
+    pub fn flag_iter(&self) -> Iter<'_, String> {
+        self.flags.iter()
     }
 }
 

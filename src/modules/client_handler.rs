@@ -4,7 +4,7 @@ use chrono::{TimeDelta, Utc};
 use regex::Regex;
 use tokio::{io::AsyncWriteExt, net::{TcpStream, tcp::OwnedWriteHalf}, sync::{Mutex, RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, time::{self, Duration}};
 
-use crate::{Replica, ReplicaInfo, User, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{get_distance, location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
+use crate::{Replica, ReplicaInfo, User, hash_password, modules::{db::{DB, DbRecord, ListRecord, Registry, SortedSetEntry, SortedSetRecord, StreamEntry, StreamRecord, StringRecord}, geofunctions::{get_distance, location_to_score, score_to_location}, parser::RedisParser, values::RedisValue}};
 
 const SUBSCRIBE_MODE_COMMANDS: [&str; 6] = ["SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT"];
 const TRANSACTION_COMMANDS: [&str; 5] = ["MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH"];
@@ -1328,6 +1328,38 @@ impl ClientHandler {
                         _ => ()
                     }
                     response
+                }
+            },
+            "AUTH" => {
+                if args.len() != 3 {
+                    RedisValue::Error("Err wrong number of arguments for 'AUTH' command".to_string()).encode()
+                } else {
+                    let username = args[1].get_string()?;
+                    let password = args[2].get_string()?;
+                    let mut successful_auth = false;
+
+                    let userdb = self.users.read().await;
+                    if let Some(user) = userdb.get(&username) {
+                        let password_hash = hash_password(&password);
+                        for pass in user.password_iter() {
+                            if pass == &password_hash {
+                                successful_auth = true;
+                                break;
+                            }
+                        }
+                        for flag in user.flag_iter() {
+                            if flag == "nopass" {
+                                successful_auth = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if successful_auth {
+                        RedisValue::String("OK".to_string()).as_simple_string()?
+                    } else {
+                        RedisValue::Error("WRONGPASS invalid username-password pair or user is disabled.".to_string()).encode()
+                    }
                 }
             },
             c => RedisValue::Error(format!("Err unknown command '{}'", c)).encode(),
