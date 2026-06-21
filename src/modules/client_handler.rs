@@ -208,7 +208,7 @@ impl ClientHandler {
     }
 
     async fn handle_commands(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
-        if let None = self.current_user {
+        if let None = self.current_user && command != "AUTH" {
             return Ok(RedisValue::Error("NOAUTH Authentication required.".to_string()).encode())
         }
         if self.multi_mode && !TRANSACTION_COMMANDS.contains(&command) {
@@ -1367,6 +1367,7 @@ impl ClientHandler {
                     let successful_auth = self.authenticate_user(&username, &password).await;
 
                     if successful_auth {
+                        self.current_user = Some(username);
                         RedisValue::String("OK".to_string()).as_simple_string()?
                     } else {
                         RedisValue::Error("WRONGPASS invalid username-password pair or user is disabled.".to_string()).encode()
