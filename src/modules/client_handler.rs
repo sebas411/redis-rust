@@ -36,10 +36,35 @@ pub struct ClientHandler {
 
 
 impl ClientHandler {
-    pub fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, db_dir: Option<String>, db_filename: Option<String>, users: Arc<RwLock<HashMap<String, User>>>) -> Self {
-        let current_user = Some("default".to_string());
+    pub async fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, db_dir: Option<String>, db_filename: Option<String>, users: Arc<RwLock<HashMap<String, User>>>) -> Self {
+        let mut my_self =
         Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None, replica_info: repl_info,
-            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename, watched_keys: vec![], users, current_user }
+            write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, db_dir, db_filename, watched_keys: vec![], users, current_user: None };
+        if my_self.authenticate_user("default", "").await {
+            my_self.current_user = Some("default".to_string());
+        }
+        my_self
+    }
+
+    async fn authenticate_user(&self, username: &str, password: &str) -> bool {
+        let mut successful_auth = false;
+        let userdb = self.users.read().await;
+        if let Some(user) = userdb.get(username) {
+            let password_hash = hash_password(&password);
+            for pass in user.password_iter() {
+                if pass == &password_hash {
+                    successful_auth = true;
+                    break;
+                }
+            }
+            for flag in user.flag_iter() {
+                if flag == "nopass" {
+                    successful_auth = true;
+                    break;
+                }
+            }
+        }
+        successful_auth
     }
 
     async fn send(&mut self, src: &[u8], overwrite: bool) -> Result<()>{
@@ -183,6 +208,9 @@ impl ClientHandler {
     }
 
     async fn handle_commands(&mut self, command: &str, args: Vec<RedisValue>) -> Result<Vec<u8>> {
+        if let None = self.current_user {
+            return Ok(RedisValue::Error("NOAUTH Authentication required.".to_string()).encode())
+        }
         if self.multi_mode && !TRANSACTION_COMMANDS.contains(&command) {
             self.queued_commands.push(args);
             return Ok(RedisValue::String("QUEUED".to_string()).as_simple_string()?);
@@ -1336,24 +1364,7 @@ impl ClientHandler {
                 } else {
                     let username = args[1].get_string()?;
                     let password = args[2].get_string()?;
-                    let mut successful_auth = false;
-
-                    let userdb = self.users.read().await;
-                    if let Some(user) = userdb.get(&username) {
-                        let password_hash = hash_password(&password);
-                        for pass in user.password_iter() {
-                            if pass == &password_hash {
-                                successful_auth = true;
-                                break;
-                            }
-                        }
-                        for flag in user.flag_iter() {
-                            if flag == "nopass" {
-                                successful_auth = true;
-                                break;
-                            }
-                        }
-                    }
+                    let successful_auth = self.authenticate_user(&username, &password).await;
 
                     if successful_auth {
                         RedisValue::String("OK".to_string()).as_simple_string()?

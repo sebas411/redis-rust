@@ -197,7 +197,7 @@ async fn main() -> Result<()> {
         let dbfilename = dbfilename.clone();
         let users = Arc::clone(&users);
         handles.spawn(async move {
-            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, dir, dbfilename, users);
+            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, dir, dbfilename, users).await;
             slave_handshake(&repl_info2, &port, client_handler).await.unwrap();
         });
     }
@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
                         let dir = dir.clone();
                         let dbfilename = dbfilename.clone();
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, dir, dbfilename, users);
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, dir, dbfilename, users).await;
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }
