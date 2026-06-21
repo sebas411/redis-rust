@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
-
+use sha2::{Sha256, Digest};
 use crate::modules::{client_handler::ClientHandler, db::{DB, Registry}, file_handler::FileHandler, values::RedisValue};
 mod modules;
 
@@ -27,6 +27,21 @@ impl User {
     }
     pub fn add_flag(&mut self, flag: &str) {
         self.flags.push(flag.to_string());
+    }
+    pub fn add_password(&mut self, password: &str) {
+        let mut hasher = Sha256::new();
+        hasher.update(password);
+        let result = hasher.finalize();
+        let password_hash = hex::encode(result);
+
+        self.passwords.push(password_hash);
+
+        for i in 0..self.flags.len() {
+            if self.flags[i] == "nopass" {
+                self.flags.remove(i);
+                break;
+            }
+        }
     }
 }
 
