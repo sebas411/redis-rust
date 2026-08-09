@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, slice::Iter, sync::Arc};
+use std::{collections::HashMap, env::current_dir, format, path::PathBuf, println, slice::Iter, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
@@ -132,13 +132,35 @@ async fn slave_handshake(rep: &Arc<RwLock<ReplicaInfo>>, port: &str, mut client_
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    const CONFIG_FLAGS : [&str; 6] = ["dir", "dbfilename", "appendonly", "appenddirname", "appendfilename", "appendfsync"];
     let args = std::env::args().collect::<Vec<_>>();
     let port = match args.iter().skip_while(|a| a != &"--port").skip(1).next() {
         None => "6379",
         Some(port) => port,
     };
-    let dir = args.iter().skip_while(|a| a != &"--dir").skip(1).next().cloned();
-    let dbfilename = args.iter().skip_while(|a| a != &"--dbfilename").skip(1).next().cloned();
+    let mut config = HashMap::new();
+    for i in 0..args.len() {
+        let arg = &args[i];
+        if let Some(unprefixed) = arg.strip_prefix("--") && CONFIG_FLAGS.contains(&unprefixed) {
+            if i + 1 < args.len() {
+                let value = &args[i+1];
+                config.insert(unprefixed.to_string(), value.to_string());
+            }
+        }
+    }
+    for flag in CONFIG_FLAGS {
+        if !config.contains_key(flag) {
+            let default = match flag {
+                "dir" => current_dir().unwrap_or_default().to_string_lossy().into_owned(),
+                "appendonly" => "no".to_string(),
+                "appenddirname" => "appendonlydir".to_string(),
+                "appendfilename" => "appendonly.aof".to_string(),
+                "appendfsync" => "everysec".to_string(),
+                _ => "".to_string()
+            };
+            config.insert(flag.to_string(), default);
+        }
+    }
     let role;
     let master_address;
     match args.iter().skip_while(|a| a != &"--replicaof").skip(1).next() {
@@ -170,8 +192,7 @@ async fn main() -> Result<()> {
     tokio::pin!(ctrl_c_signal);
 
     // read file if it was provided
-    if let Some(filename) = &dbfilename {
-        let dirname = dir.as_deref().unwrap_or(".");
+    if let Some(filename) = config.get("dbfilename") && let Some(dirname) = config.get("dir") {
         let path = PathBuf::from(dirname).join(filename);
         let file_handler = FileHandler::new(db.clone());
         if path.is_file() {
@@ -192,11 +213,10 @@ async fn main() -> Result<()> {
         }
         let ps_registry = Arc::clone(&ps_registry);
         let port = port.to_string();
-        let dir = dir.clone();
-        let dbfilename = dbfilename.clone();
+        let config = config.clone();
         let users = Arc::clone(&users);
         handles.spawn(async move {
-            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, dir, dbfilename, users).await;
+            let client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, true, users, config).await;
             slave_handshake(&repl_info2, &port, client_handler).await.unwrap();
         });
     }
@@ -222,10 +242,9 @@ async fn main() -> Result<()> {
                         let replicadb = Arc::clone(&replicadb);
                         let repl_info = Arc::clone(&repl_info);
                         let users = Arc::clone(&users);
-                        let dir = dir.clone();
-                        let dbfilename = dbfilename.clone();
+                        let config = config.clone();
                         handles.spawn(async move {
-                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, dir, dbfilename, users).await;
+                            let mut client_handler = ClientHandler::new(current_thread_id, db, ps_registry, receiver, repl_info, replicadb, false, users, config).await;
                             if let Err(e) = client_handler.handle_client_async(stream).await {
                                 eprintln!("Error handling client: {}", e);
                             }
