@@ -169,6 +169,7 @@ async fn main() -> Result<()> {
 
         let complete_dirname = format!("{}/{}", dir, appendonlydirname);
         let complete_filename = format!("{}/{}.1.incr.aof", complete_dirname, appendonlyfilename);
+        let manifest_filename = format!("{}/{}.manifest", complete_dirname, appendonlyfilename);
         
         if fs::create_dir(&complete_dirname).is_ok() {
             println!("Created dir: {}", complete_dirname);
@@ -180,9 +181,9 @@ async fn main() -> Result<()> {
         } else {
             println!("Error creating append only file: {}", complete_filename);
         }
-        if let Ok(mut manifest_file) = fs::File::create(format!("{}/{}.manifest", complete_dirname, appendonlyfilename)) {
-            match manifest_file.write_all(format!("file {} seq 1 type i\n", complete_filename).as_bytes()) {
-                Ok(_) => println!("Append only manifest written"),
+        if let Ok(mut manifest_file) = fs::File::create(&manifest_filename) {
+            match manifest_file.write_all(format!("file {}.1.incr.aof seq 1 type i\n", appendonlyfilename).as_bytes()) {
+                Ok(_) => println!("Append only manifest written: {}", manifest_filename),
                 Err(e) => println!("Append only manifest write error: {}", e),
             }
         }
