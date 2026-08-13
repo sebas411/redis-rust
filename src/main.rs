@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
         let dir = config.get("dir").map_or(".", String::as_str);
 
         let complete_dirname = format!("{}/{}", dir, appendonlydirname);
-        let complete_filename = format!("{}/{}", complete_dirname, appendonlyfilename);
+        let complete_filename = format!("{}/{}.1.incr.aof", complete_dirname, appendonlyfilename);
         
         if fs::create_dir(&complete_dirname).is_ok() {
             println!("Created dir: {}", complete_dirname);
