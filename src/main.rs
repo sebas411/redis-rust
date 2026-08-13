@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::current_dir, format, path::PathBuf, println, slice::Iter, sync::Arc};
+use std::{collections::HashMap, env::current_dir, format, fs, path::PathBuf, println, slice::Iter, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
@@ -161,6 +161,29 @@ async fn main() -> Result<()> {
             config.insert(flag.to_string(), default);
         }
     }
+
+    if let Some(appendonly) = config.get("appendonly") && appendonly == "yes" {
+        let appendonlydirname = config.get("appenddirname").map_or("appendonlydir", String::as_str);
+        let appendonlyfilename = config.get("appendfilename").map_or("appendonly.aof", String::as_str);
+        let dir = config.get("dir").map_or(".", String::as_str);
+
+        let complete_dirname = format!("{}/{}", dir, appendonlydirname);
+        let complete_filename = format!("{}/{}", complete_dirname, appendonlyfilename);
+        
+        if fs::create_dir(&complete_dirname).is_ok() {
+            println!("Created dir: {}", complete_dirname);
+        } else {
+            println!("Error creating dir: {}", complete_dirname);
+        }
+        if fs::File::create(&complete_filename).is_ok() {
+            println!("Created append only file: {}", complete_filename);
+        } else {
+            println!("Error creating append only file: {}", complete_filename);
+        }
+
+        config.insert("completeappendfilename".to_string(), complete_filename);
+    }
+
     let role;
     let master_address;
     match args.iter().skip_while(|a| a != &"--replicaof").skip(1).next() {
