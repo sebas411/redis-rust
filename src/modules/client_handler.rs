@@ -1,4 +1,4 @@
-use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{SystemTime, UNIX_EPOCH}, usize};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, fs::OpenOptions, io::Write, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{SystemTime, UNIX_EPOCH}, usize};
 use anyhow::{Result, anyhow};
 use chrono::{TimeDelta, Utc};
 use regex::Regex;
@@ -150,7 +150,7 @@ impl ClientHandler {
                             return Ok(())
                         },
                         Ok(value) => {
-                            if let RedisValue::Array(args) = value {
+                            if let RedisValue::Array(args) = &value {
                                 if args.is_empty() {
                                     continue;
                                 }
@@ -164,14 +164,21 @@ impl ClientHandler {
                                 }
                                 let response = self.handle_commands(&command, args.clone()).await?;
                                 // Send to replication replicas
-                                if WRITE_COMMANDS.contains(&command.as_str()) && !self.replicas.read().await.is_empty() {
-                                    let replicadb = self.replicas.read().await;
-                                    for i in 0..replicadb.len() {
-                                        let replica = replicadb.get(i).unwrap().lock().await;
-                                        replica.send(args.clone()).unwrap();
+                                if WRITE_COMMANDS.contains(&command.as_str()) {
+                                    if let Some(appendonly) = self.config.get("appendonly") && appendonly == "yes" {
+                                        let filename = self.config.get("completeappendfilename").map_or("", String::as_str);
+                                        let mut file = OpenOptions::new().create(true).append(true).open(filename)?;
+                                        file.write_all(&value.clone().encode())?;
                                     }
-                                    let processed_bytes = parser.get_processed_bytes();
-                                    self.write_bytes +=  processed_bytes - self.processed_bytes;
+                                    if !self.replicas.read().await.is_empty() {
+                                        let replicadb = self.replicas.read().await;
+                                        for i in 0..replicadb.len() {
+                                            let replica = replicadb.get(i).unwrap().lock().await;
+                                            replica.send(args.clone()).unwrap();
+                                        }
+                                        let processed_bytes = parser.get_processed_bytes();
+                                        self.write_bytes +=  processed_bytes - self.processed_bytes;
+                                    }
                                 }
                                 if !self.prevent_send {
                                     self.send(&response, false).await?;
