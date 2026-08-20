@@ -1,4 +1,4 @@
-use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, fs::OpenOptions, io::Write, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{SystemTime, UNIX_EPOCH}, usize};
+use std::{cmp::{max, min}, collections::{HashMap, HashSet, VecDeque}, fs::{self, File, OpenOptions}, io::{BufRead, BufReader, Write}, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::{SystemTime, UNIX_EPOCH}, usize};
 use anyhow::{Result, anyhow};
 use chrono::{TimeDelta, Utc};
 use regex::Regex;
@@ -37,12 +37,45 @@ pub struct ClientHandler {
 impl ClientHandler {
     pub async fn new(id: u32, db: Arc<RwLock<DB>>, ps_registry: Arc<RwLock<Registry>>, receiver: UnboundedReceiver<Vec<u8>>, repl_info: Arc<RwLock<ReplicaInfo>>, replicadb: Arc<RwLock<Vec<Arc<Mutex<Replica>>>>>, is_replicating: bool, users: Arc<RwLock<HashMap<String, User>>>, config: HashMap<String, String>) -> Self {
         let mut my_self =
-        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None, replica_info: repl_info, config,
+        Self { id, db, ps_registry, receiver, subscribe_mode: false, multi_mode: false, queued_commands: vec![], processed_bytes: 0, ack_sender: None, replica_info: repl_info, config: config.clone(),
             write_stream: None, instruction_receiver: None, replicas: replicadb, is_replicating, write_bytes: 0, prevent_send: false, watched_keys: vec![], users, current_user: None };
         if my_self.authenticate_user("default", "").await {
             my_self.current_user = Some("default".to_string());
         }
+        if let Some(appendonly) = config.get("appendonly") && appendonly == "yes" {
+            match my_self.replay_commands().await {
+                Err(e) => println!("Error replaying commands from appendonlyfile: {}", e),
+                Ok(_) => println!("Commands from appendonlyfile replayed"),
+            }
+        }
         my_self
+    }
+
+    async fn replay_commands(&mut self) -> Result<()> {
+        let manifest_filename = self.config.get("appendmanifestfilename").unwrap();
+        let appenddir = self.config.get("appenddirname").unwrap().to_string();
+        let dir = self.config.get("dir").unwrap().to_string();
+        let manifest_file = File::open(manifest_filename)?;
+        let reader = BufReader::new(manifest_file);
+        for line in reader.lines() {
+            let line = line?;
+            if line.ends_with("type i") {
+                let filename = format!("{}/{}/{}", dir, appenddir, line.split(' ').nth(1).ok_or(anyhow!("Manifest file malformed"))?);
+                let data = fs::read(filename)?;
+                
+                let mut parser = RedisParser::new(data.as_slice());
+                while let Ok(value) = parser.read_value().await {
+                    if let RedisValue::Array(args) = &value {
+                        if args.is_empty() {
+                            continue;
+                        }
+                        let command = args[0].get_string().unwrap_or_default().to_ascii_uppercase();
+                        self.handle_commands(&command, args.clone()).await.unwrap();
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn authenticate_user(&self, username: &str, password: &str) -> bool {
@@ -166,8 +199,11 @@ impl ClientHandler {
                                 // Send to replication replicas
                                 if WRITE_COMMANDS.contains(&command.as_str()) {
                                     if let Some(appendonly) = self.config.get("appendonly") && appendonly == "yes" {
-                                        let filename = self.config.get("completeappendfilename").map_or("", String::as_str);
-                                        let mut file = OpenOptions::new().create(true).append(true).open(filename)?;
+                                        let filename = self.config.get("appendfilename").ok_or(anyhow!("Variable appendfilename not found in config"))?;
+                                        let appenddir = self.config.get("appenddirname").ok_or(anyhow!("Variable appenddirname not found in config"))?;
+                                        let dir = self.config.get("dir").ok_or(anyhow!("Variable dir not found in config"))?;
+                                        let complete_filename = format!("{}/{}/{}.1.incr.aof", dir, appenddir, filename);
+                                        let mut file = OpenOptions::new().create(true).append(true).open(complete_filename)?;
                                         file.write_all(&value.clone().encode())?;
                                     }
                                     if !self.replicas.read().await.is_empty() {

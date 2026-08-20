@@ -1,5 +1,5 @@
 use std::{cmp::max, pin::Pin};
-use tokio::{io::AsyncReadExt, net::{tcp::{OwnedReadHalf}}};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use anyhow::{Result, anyhow};
 use crate::modules::values::RedisValue;
@@ -15,15 +15,16 @@ fn read_uint(blob: &[u8]) -> Result<usize> {
     Ok(usize::from_str_radix(&str_repr, 10)?)
 }
 
-pub struct RedisParser {
-    stream: OwnedReadHalf,
+pub struct RedisParser<R> {
+    stream: R,
     buffer: [u8; 1024],
     position: usize,
     processed_bytes: usize,
 }
 
-impl RedisParser {
-    pub fn new(stream: OwnedReadHalf) -> Self {
+impl<R> RedisParser<R> 
+where R: AsyncRead + Unpin + Send {
+    pub fn new(stream: R) -> Self {
         Self { stream, buffer: [0u8; 1024], position: 0, processed_bytes: 0}
     }
     pub fn get_processed_bytes(&self) -> usize {
@@ -33,7 +34,7 @@ impl RedisParser {
         Box::pin(async move {
             if self.position == 0 {
                 if let Err(_) = self.stream.read_exact(&mut self.buffer[..1]).await {
-                    return Err(anyhow!("Client '{}' disconnected. ", self.stream.peer_addr()?))
+                    return Err(anyhow!("Client disconnected."))
                 }
                 self.position = 1;
             }

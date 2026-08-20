@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::current_dir, format, fs, io::Write, path::PathBuf, println, slice::Iter, sync::Arc};
+use std::{collections::HashMap, env::current_dir, format, fs::{self, OpenOptions}, io::Write, path::PathBuf, println, slice::Iter, sync::Arc};
 use anyhow::Result;
 use rand::{distr::{Alphanumeric, SampleString}, rng};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, signal, sync::{RwLock, mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel}}, task::JoinSet};
@@ -181,14 +181,14 @@ async fn main() -> Result<()> {
         } else {
             println!("Error creating append only file: {}", complete_filename);
         }
-        if let Ok(mut manifest_file) = fs::File::create(&manifest_filename) {
+        if let Ok(mut manifest_file) = OpenOptions::new().create(true).append(true).open(&manifest_filename) {
             match manifest_file.write_all(format!("file {}.1.incr.aof seq 1 type i\n", appendonlyfilename).as_bytes()) {
                 Ok(_) => println!("Append only manifest written: {}", manifest_filename),
                 Err(e) => println!("Append only manifest write error: {}", e),
             }
         }
 
-        config.insert("completeappendfilename".to_string(), complete_filename);
+        config.insert("appendmanifestfilename".to_string(), manifest_filename);
     }
 
     let role;
