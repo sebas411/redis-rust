@@ -26,7 +26,10 @@ impl ClientHandler {
                             if let RedisValue::String(old_value) = s_record.get_value() {
                                 raw.extend(old_value.as_bytes());
                             }
-                            if let Some(mut_byte) = raw.get_mut(0) {
+                            for _ in raw.len() .. (offset / 8 + 1) as usize {
+                                raw.push(0);
+                            }
+                            if let Some(mut_byte) = raw.get_mut((offset / 8) as usize) {
                                 if *mut_byte & my_mask > 0 {
                                     original = 1;
                                 }
@@ -39,7 +42,11 @@ impl ClientHandler {
                             record = StringRecord::new(RedisValue::String(String::from_utf8(raw)?));
                         }
                         _ => {
-                            let raw = vec![value << (7 - (offset % 8))];
+                            let mut raw = vec![];
+                            for _ in 0 .. offset / 8 {
+                                raw.push(0);
+                            }
+                            raw.push(value << (7 - (offset % 8)));
                             record = StringRecord::new(RedisValue::String(String::from_utf8(raw)?));
                         }
                     }
