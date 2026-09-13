@@ -105,6 +105,44 @@ impl ClientHandler {
                     RedisValue::Int(length as i64).encode()
                 }
             },
+            "BITCOUNT" => {
+                if !(args.len() == 2 || args.len() == 4) {
+                    RedisValue::Error(
+                        "Err wrong number of arguments for 'BITCOUNT' command".to_string(),
+                    )
+                    .encode()
+                } else {
+                    let key = args[1].clone().get_string()?;
+                    let mut total_bits = 0;
+                    
+                    match self.db.read().await.get(&key) {
+                        Some(DbRecord::String(s_record)) => {
+                            if let RedisValue::String(raw) = s_record.get_value() {
+                                let start;
+                                let end;
+                                if args.len() == 4 {
+                                    start = max(args[2].get_string()?.parse::<usize>()?, 0);
+                                    end = min(args[3].get_string()?.parse::<usize>()?, raw.len() - 1);
+                                } else {
+                                    start = 0;
+                                    end = raw.len() - 1;
+                                }
+                                for i in start..=end {
+                                    let my_byte = raw[i];
+                                    for j in 0..8 {
+                                        let mask = 1u8 << j;
+                                        if my_byte & mask > 0 {
+                                            total_bits += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        _ => ()
+                    }
+                    RedisValue::Int(total_bits as i64).encode()
+                }
+            },
             _ => unreachable!("command routed to the wrong handler: {command}"),
         };
         Ok(response)

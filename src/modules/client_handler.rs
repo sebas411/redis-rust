@@ -301,7 +301,7 @@ impl ClientHandler {
                 self.execute_geospatial_command(command, args).await
             }
             "ACL" | "AUTH" => self.execute_acl_command(command, args).await,
-            "SETBIT" | "GETBIT" | "STRLEN" => self.execute_bitmaps_command(command, args).await,
+            "SETBIT" | "GETBIT" | "STRLEN" | "BITCOUNT" => self.execute_bitmaps_command(command, args).await,
             command => Ok(RedisValue::Error(format!("Err unknown command '{}'", command)).encode()),
         }
     }
