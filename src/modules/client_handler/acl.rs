@@ -17,7 +17,7 @@ impl ClientHandler {
                     match acl_command.as_str() {
                         "WHOAMI" => {
                             if let Some(user) = &self.current_user {
-                                response = RedisValue::String(user.to_string()).encode()
+                                response = RedisValue::String(user.as_bytes().to_vec()).encode()
                             }
                         }
                         "GETUSER" => {
@@ -38,7 +38,7 @@ impl ClientHandler {
                             let mut userdb = self.users.write().await;
                             let user = userdb.get_mut(&user_req).unwrap();
                             user.add_password(&password);
-                            response = RedisValue::String("OK".to_string()).as_simple_string()?;
+                            response = RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?;
                         }
                         _ => (),
                     }
@@ -58,7 +58,7 @@ impl ClientHandler {
 
                     if successful_auth {
                         self.current_user = Some(username);
-                        RedisValue::String("OK".to_string()).as_simple_string()?
+                        RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                     } else {
                         RedisValue::Error(
                             "WRONGPASS invalid username-password pair or user is disabled."

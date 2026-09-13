@@ -111,7 +111,7 @@ impl ClientHandler {
                     }
 
                     match error_response {
-                        None => RedisValue::String(entry_id).encode(),
+                        None => RedisValue::String(entry_id.as_bytes().to_vec()).encode(),
                         Some(err) => err,
                     }
                 }
@@ -191,11 +191,11 @@ impl ClientHandler {
                                 break;
                             }
                             let mut entry_array = vec![];
-                            entry_array.push(RedisValue::String(entry.get_id().to_string()));
+                            entry_array.push(RedisValue::String(entry.get_id().as_bytes().to_vec()));
                             let mut values_array = vec![];
                             for (k, v) in entry {
-                                values_array.push(RedisValue::String(k.clone()));
-                                values_array.push(RedisValue::String(v.clone()));
+                                values_array.push(RedisValue::String(k.as_bytes().to_vec()));
+                                values_array.push(RedisValue::String(v.as_bytes().to_vec()));
                             }
                             entry_array.push(RedisValue::Array(values_array));
                             response_array.push(RedisValue::Array(entry_array));
@@ -250,7 +250,7 @@ impl ClientHandler {
                             usize::from_str_radix(&entry_id_split.next().unwrap(), 10).unwrap();
 
                         let mut stream_array = vec![];
-                        stream_array.push(RedisValue::String(stream_name.clone()));
+                        stream_array.push(RedisValue::String(stream_name.as_bytes().to_vec()));
 
                         let mut entries_array = vec![];
 
@@ -275,11 +275,11 @@ impl ClientHandler {
                                     }
                                     let mut entry_array = vec![];
                                     entry_array
-                                        .push(RedisValue::String(entry.get_id().to_string()));
+                                        .push(RedisValue::String(entry.get_id().as_bytes().to_vec()));
                                     let mut values_array = vec![];
                                     for (k, v) in entry {
-                                        values_array.push(RedisValue::String(k.clone()));
-                                        values_array.push(RedisValue::String(v.clone()));
+                                        values_array.push(RedisValue::String(k.as_bytes().to_vec()));
+                                        values_array.push(RedisValue::String(v.as_bytes().to_vec()));
                                     }
                                     entry_array.push(RedisValue::Array(values_array));
                                     entries_array.push(RedisValue::Array(entry_array));
@@ -348,11 +348,11 @@ impl ClientHandler {
                             }
                             if let Some(entry) = value {
                                 let mut entry_array = vec![];
-                                entry_array.push(RedisValue::String(entry.get_id().to_string()));
+                                entry_array.push(RedisValue::String(entry.get_id().as_bytes().to_vec()));
                                 let mut values_array = vec![];
                                 for (k, v) in &entry {
-                                    values_array.push(RedisValue::String(k.clone()));
-                                    values_array.push(RedisValue::String(v.clone()));
+                                    values_array.push(RedisValue::String(k.as_bytes().to_vec()));
+                                    values_array.push(RedisValue::String(v.as_bytes().to_vec()));
                                 }
                                 entry_array.push(RedisValue::Array(values_array));
                                 entries_array.push(RedisValue::Array(entry_array));

@@ -40,8 +40,8 @@ impl ClientHandler {
                     let current_subscriptions = reg.subscriptions.get(&self.id).unwrap().len();
                     self.subscribe_mode = true;
                     let mut response = vec![];
-                    response.push(RedisValue::String("subscribe".to_string()));
-                    response.push(RedisValue::String(channel));
+                    response.push(RedisValue::String("subscribe".as_bytes().to_vec()));
+                    response.push(RedisValue::String(channel.as_bytes().to_vec()));
                     response.push(RedisValue::Int(current_subscriptions as i64));
                     RedisValue::Array(response).encode()
                 }
@@ -62,9 +62,9 @@ impl ClientHandler {
                         for sub in current_subscribers {
                             let sender = reg.senders.get(sub).unwrap();
                             let mut response = vec![];
-                            response.push(RedisValue::String("message".to_string()));
-                            response.push(RedisValue::String(channel.clone()));
-                            response.push(RedisValue::String(message_string.clone()));
+                            response.push(RedisValue::String("message".as_bytes().to_vec()));
+                            response.push(RedisValue::String(channel.as_bytes().to_vec()));
+                            response.push(RedisValue::String(message_string.as_bytes().to_vec()));
                             sender.send(RedisValue::Array(response).encode())?;
                         }
                         current_subscriber_num = current_subscribers.len();
@@ -97,8 +97,8 @@ impl ClientHandler {
                         self.subscribe_mode = false;
                     }
                     let mut response = vec![];
-                    response.push(RedisValue::String("unsubscribe".to_string()));
-                    response.push(RedisValue::String(channel));
+                    response.push(RedisValue::String("unsubscribe".as_bytes().to_vec()));
+                    response.push(RedisValue::String(channel.as_bytes().to_vec()));
                     response.push(RedisValue::Int(current_subscriptions as i64));
                     RedisValue::Array(response).encode()
                 }

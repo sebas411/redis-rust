@@ -89,7 +89,7 @@ where R: AsyncRead + Unpin + Send {
     }
     async fn simple_string(&mut self) -> Result<RedisValue> {
         let blob = self.read_blob().await?;
-        Ok(RedisValue::String(String::from_utf8(blob[1..blob.len()-2].to_vec())?))
+        Ok(RedisValue::String(blob[1..blob.len()-2].to_vec()))
     }
     async fn integer(&mut self) -> Result<RedisValue> {
         let blob = self.read_blob().await?;
@@ -101,7 +101,7 @@ where R: AsyncRead + Unpin + Send {
     async fn bulk_string(&mut self) -> Result<RedisValue> {
         let blob = self.read_blob().await?;
         let n = read_uint(&blob[1..])?;
-        let decoded_string = String::from_utf8(self.buffer[..n].to_vec())?;
+        let decoded_string = self.buffer[..n].to_vec();
         self.processed_bytes += n + 2;
         self.buffer.copy_within(n+2.., 0);
         self.position = max(0, self.position - (n+2));

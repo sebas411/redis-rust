@@ -1,3 +1,5 @@
+use std::vec;
+
 use super::*;
 
 impl ClientHandler {
@@ -10,11 +12,11 @@ impl ClientHandler {
             "PING" => {
                 if self.subscribe_mode {
                     let mut response = vec![];
-                    response.push(RedisValue::String("pong".to_string()));
-                    response.push(RedisValue::String("".to_string()));
+                    response.push(RedisValue::String("pong".as_bytes().to_vec()));
+                    response.push(RedisValue::String(vec![]));
                     RedisValue::Array(response).encode()
                 } else {
-                    RedisValue::String("PONG".to_string()).as_simple_string()?
+                    RedisValue::String("PONG".as_bytes().to_vec()).as_simple_string()?
                 }
             }
             "ECHO" => {
@@ -56,7 +58,7 @@ impl ClientHandler {
                         let mut w_db = self.db.write().await;
                         w_db.insert(key, DbRecord::String(record));
                     }
-                    RedisValue::String("OK".to_string()).as_simple_string()?
+                    RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                 }
             }
             "GET" => {
@@ -90,8 +92,8 @@ impl ClientHandler {
                     let varname = args[1].get_string()?;
                     let db = self.db.read().await;
                     match db.get(&varname) {
-                        Some(record) => RedisValue::String(record.get_type()).as_simple_string()?,
-                        None => RedisValue::String("none".to_string()).as_simple_string()?,
+                        Some(record) => RedisValue::String(record.get_type().as_bytes().to_vec()).as_simple_string()?,
+                        None => RedisValue::String("none".as_bytes().to_vec()).as_simple_string()?,
                     }
                 }
             }
@@ -113,7 +115,7 @@ impl ClientHandler {
                                     i64::from_str_radix(&value.get_value().get_string()?, 10)
                                 {
                                     new_value = number + 1;
-                                    value.set_value(RedisValue::String(format!("{}", new_value)));
+                                    value.set_value(RedisValue::String(format!("{}", new_value).as_bytes().to_vec()));
                                 } else {
                                     error = Some("ERR value is not an integer or out of range");
                                 }
@@ -123,7 +125,7 @@ impl ClientHandler {
                             db.insert(
                                 key,
                                 DbRecord::String(StringRecord::new(RedisValue::String(
-                                    "1".to_string(),
+                                    "1".as_bytes().to_vec(),
                                 ))),
                             );
                             new_value = 1;

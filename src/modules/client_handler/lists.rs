@@ -90,7 +90,7 @@ impl ClientHandler {
                     let mut return_list = vec![];
                     if start < list.len() && start <= stop {
                         for item in list.range(start..=stop) {
-                            return_list.push(RedisValue::String(item.clone()));
+                            return_list.push(RedisValue::String(item.as_bytes().to_vec()));
                         }
                     }
 
@@ -181,7 +181,7 @@ impl ClientHandler {
                             for _ in 0..pop_amount {
                                 match list_record.pop_front() {
                                     Some(popped) => {
-                                        returned_items.push(RedisValue::String(popped));
+                                        returned_items.push(RedisValue::String(popped.as_bytes().to_vec()));
                                     }
                                     None => {
                                         break;
@@ -250,7 +250,7 @@ impl ClientHandler {
                     }
                     // actually respond to the client
                     if let Some(value) = value {
-                        let array = vec![RedisValue::String(list_name), RedisValue::String(value)];
+                        let array = vec![RedisValue::String(list_name.as_bytes().to_vec()), RedisValue::String(value.as_bytes().to_vec())];
                         RedisValue::Array(array).encode()
                     } else {
                         RedisValue::NullArray.encode()

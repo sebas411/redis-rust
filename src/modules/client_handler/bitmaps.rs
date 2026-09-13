@@ -24,7 +24,7 @@ impl ClientHandler {
                         Some(DbRecord::String(s_record)) => {
                             let mut raw = vec![];
                             if let RedisValue::String(old_value) = s_record.get_value() {
-                                raw.extend(old_value.as_bytes());
+                                raw.extend(old_value);
                             }
                             for _ in raw.len() .. (offset / 8 + 1) as usize {
                                 raw.push(0);
@@ -39,7 +39,7 @@ impl ClientHandler {
                                     *mut_byte &= !my_mask;
                                 }
                             }
-                            record = StringRecord::new(RedisValue::String(String::from_utf8(raw)?));
+                            record = StringRecord::new(RedisValue::String(raw));
                         }
                         _ => {
                             let mut raw = vec![];
@@ -47,7 +47,7 @@ impl ClientHandler {
                                 raw.push(0);
                             }
                             raw.push(value << (7 - (offset % 8)));
-                            record = StringRecord::new(RedisValue::String(String::from_utf8(raw)?));
+                            record = StringRecord::new(RedisValue::String(raw));
                         }
                     }
                     {
@@ -56,7 +56,34 @@ impl ClientHandler {
                     }
                     RedisValue::Int(original).encode()
                 }
-            }
+            },
+            "GETBIT" => {
+                if args.len() != 3 {
+                    RedisValue::Error(
+                        "Err wrong number of arguments for 'GETBIT' command".to_string(),
+                    )
+                    .encode()
+                } else {
+                    let key = args[1].clone().get_string()?;
+                    let offset = args[2].clone().get_string()?.parse::<i32>()?;
+                    let mut response = 0;
+                    
+                    let my_mask = 1 << (7 - (offset % 8));
+                    match self.db.read().await.get(&key) {
+                        Some(DbRecord::String(s_record)) => {
+                            if let RedisValue::String(raw) = s_record.get_value() {
+                                if let Some(original_byte) = raw.get((offset / 8) as usize) {
+                                    if original_byte & my_mask > 0 {
+                                        response = 1;
+                                    }
+                                }
+                            }
+                        },
+                        _ => ()
+                    }
+                    RedisValue::Int(response).encode()
+                }
+            },
             _ => unreachable!("command routed to the wrong handler: {command}"),
         };
         Ok(response)

@@ -1,3 +1,5 @@
+use std::vec;
+
 use super::*;
 
 impl ClientHandler {
@@ -102,12 +104,12 @@ impl ClientHandler {
                                 let (x_lat, x_lon) = score_to_location(x_entry.get_score());
                                 let (y_lat, y_lon) = score_to_location(y_entry.get_score());
                                 let distance = get_distance(x_lon, x_lat, y_lon, y_lat);
-                                RedisValue::String(format!("{}", distance)).encode()
+                                RedisValue::String(format!("{}", distance).as_bytes().to_vec()).encode()
                             } else {
-                                RedisValue::String("".to_string()).encode()
+                                RedisValue::String(vec![]).encode()
                             }
                         }
-                        _ => RedisValue::String("".to_string()).encode(),
+                        _ => RedisValue::String(vec![]).encode(),
                     }
                 }
             }
@@ -158,7 +160,7 @@ impl ClientHandler {
                                     get_distance(longitude, latitude, entry_lon, entry_lat);
                                 if entry_distance <= distance {
                                     responses
-                                        .push(RedisValue::String(entry.get_value().to_string()));
+                                        .push(RedisValue::String(entry.get_value().as_bytes().to_vec()));
                                 }
                             }
                         }

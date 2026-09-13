@@ -30,7 +30,7 @@ impl User {
     pub fn get_info(&self) -> RedisValue {
         let flags = RedisValue::array_from_string_vec(self.flags.iter().map(|s| s.as_str()).collect());
         let passwords = RedisValue::array_from_string_vec(self.passwords.iter().map(|s| s.as_str()).collect());
-        RedisValue::Array(vec![RedisValue::String("flags".to_string()), flags, RedisValue::String("passwords".to_string()), passwords])
+        RedisValue::Array(vec![RedisValue::String("flags".as_bytes().to_vec()), flags, RedisValue::String("passwords".as_bytes().to_vec()), passwords])
     }
     pub fn add_flag(&mut self, flag: &str) {
         self.flags.push(flag.to_string());
@@ -100,7 +100,7 @@ async fn slave_handshake(rep: &Arc<RwLock<ReplicaInfo>>, port: &str, mut client_
     let mut stream = TcpStream::connect(rep.read().await.get_address()).await?;
     let mut buffer = [0; 1024];
     // PING
-    stream.write_all(&RedisValue::Array(vec![RedisValue::String("PING".to_string())]).encode()).await?;
+    stream.write_all(&RedisValue::Array(vec![RedisValue::String("PING".as_bytes().to_vec())]).encode()).await?;
     //read +PONG
     stream.read_exact(&mut buffer[0..7]).await?;
 

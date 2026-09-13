@@ -68,7 +68,7 @@ impl FileHandler {
             current += 1 + value_size; // jump to value
 
             // prepare record
-            let value = RedisValue::String(value);
+            let value = RedisValue::String(value.as_bytes().to_vec());
             let mut record = StringRecord::new(value.clone());
             if let Some(expiration_millis) = expiration_millis {
                 let timestamp = DateTime::from_timestamp_millis(expiration_millis as i64).unwrap();

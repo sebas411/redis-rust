@@ -24,7 +24,10 @@ impl ClientHandler {
                             let value = match db.get(&key) {
                                 Some(DbRecord::String(string_record)) => {
                                     match string_record.get_value() {
-                                        RedisValue::String(value) => Some(value.clone()),
+                                        RedisValue::String(value) => {
+                                            let s = String::from_utf8_lossy(value).into_owned();
+                                            Some(s)
+                                        },
                                         _ => None,
                                     }
                                 }
@@ -32,7 +35,7 @@ impl ClientHandler {
                             };
                             self.watched_keys.push((key, value));
                         }
-                        RedisValue::String("OK".to_string()).as_simple_string()?
+                        RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                     }
                 }
             }
@@ -44,7 +47,7 @@ impl ClientHandler {
                     .encode()
                 } else {
                     self.watched_keys = vec![];
-                    RedisValue::String("OK".to_string()).as_simple_string()?
+                    RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                 }
             }
             _ => unreachable!("command routed to the wrong handler: {command}"),

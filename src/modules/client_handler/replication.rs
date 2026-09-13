@@ -27,7 +27,7 @@ impl ClientHandler {
                         ));
                         response.push_str("master_repl_offset:0\n");
                     }
-                    RedisValue::String(response).encode()
+                    RedisValue::String(response.as_bytes().to_vec()).encode()
                 }
             }
             "REPLCONF" => {
@@ -65,7 +65,7 @@ impl ClientHandler {
                         },
                         _ => (),
                     }
-                    RedisValue::String("OK".to_string()).as_simple_string()?
+                    RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                 }
             }
             "PSYNC" => {
@@ -85,7 +85,7 @@ impl ClientHandler {
                     let response = RedisValue::String(format!(
                         "FULLRESYNC {} 0",
                         self.replica_info.read().await.get_replid()
-                    ))
+                    ).as_bytes().to_vec())
                     .as_simple_string()?;
                     self.send(&response, false).await?;
                     let mut content = vec![];

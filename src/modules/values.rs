@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone)]
 pub enum RedisValue {
-    String(String),
+    String(Vec<u8>),
     Int(i64),
     Array(Vec<RedisValue>),
     Error(String),
@@ -15,13 +15,14 @@ impl RedisValue {
     pub fn array_from_string_vec(array: Vec<&str>) -> RedisValue {
         let mut redis_value_vec = vec![];
         for s in array {
-            redis_value_vec.push(RedisValue::String(s.to_string()));
+            redis_value_vec.push(RedisValue::String(s.as_bytes().to_vec()));
         }
         RedisValue::Array(redis_value_vec)
     }
     pub fn get_string(&self) -> Result<String> {
-        if let Self::String(s) = self {
-            Ok(s.to_owned())
+        if let Self::String(v) = self {
+            let s = String::from_utf8(v.to_vec())?;
+            Ok(s)
         } else {
             Err(anyhow!("Value is not a string."))
         }
@@ -36,8 +37,7 @@ impl RedisValue {
     pub fn encode(&self) -> Vec<u8> {
         let mut encoded = vec![];
         match self {
-            Self::String(s) => {
-                let content = s.as_bytes().to_vec();
+            Self::String(content) => {
                 let s_size = content.len();
                 encoded.extend(format!("${}\r\n", s_size).as_bytes());
                 encoded.extend(content);
@@ -68,9 +68,8 @@ impl RedisValue {
         encoded
     }
     pub fn as_simple_string(&self) -> Result<Vec<u8>> {
-        if let Self::String(s) = self {
+        if let Self::String(content) = self {
             let mut encoded = vec![];
-            let content = s.as_bytes().to_vec();
             encoded.push(b'+');
             encoded.extend(content);
             encoded.extend("\r\n".as_bytes());
@@ -92,7 +91,8 @@ impl fmt::Display for RedisValue {
                 }
                 write!(f, "{}]", a.last().unwrap_or(&RedisValue::NullString))?;
             },
-            Self::String(s) => {
+            Self::String(v) => {
+                let s = String::from_utf8_lossy(v).into_owned();
                 write!(f, "\"{}\"", s)?;
             },
             Self::Int(i) => {

@@ -7,7 +7,10 @@ impl ClientHandler {
                 let db = self.db.read().await;
                 let new_value = match db.get(k) {
                     Some(DbRecord::String(string_record)) => match string_record.get_value() {
-                        RedisValue::String(value) => Some(value.clone()),
+                        RedisValue::String(value) => {
+                            let s = String::from_utf8_lossy(value).into_owned();
+                            Some(s)
+                        },
                         _ => None,
                     },
                     _ => None,
@@ -53,7 +56,7 @@ impl ClientHandler {
                     .encode()
                 } else {
                     self.multi_mode = true;
-                    RedisValue::String("OK".to_string()).as_simple_string()?
+                    RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                 }
             }
             "DISCARD" => {
@@ -67,7 +70,7 @@ impl ClientHandler {
                         self.multi_mode = false;
                         self.queued_commands = vec![];
                         self.watched_keys = vec![];
-                        RedisValue::String("OK".to_string()).as_simple_string()?
+                        RedisValue::String("OK".as_bytes().to_vec()).as_simple_string()?
                     } else {
                         RedisValue::Error("ERR DISCARD without MULTI".to_string()).encode()
                     }

@@ -268,7 +268,7 @@ impl ClientHandler {
         }
         if self.multi_mode && !TRANSACTION_COMMANDS.contains(&command) {
             self.queued_commands.push(args);
-            return Ok(RedisValue::String("QUEUED".to_string()).as_simple_string()?);
+            return Ok(RedisValue::String("QUEUED".as_bytes().to_vec()).as_simple_string()?);
         }
         match command {
             "EXEC" => self.exec_queued().await,
@@ -301,7 +301,7 @@ impl ClientHandler {
                 self.execute_geospatial_command(command, args).await
             }
             "ACL" | "AUTH" => self.execute_acl_command(command, args).await,
-            "SETBIT" => self.execute_bitmaps_command(command, args).await,
+            "SETBIT" | "GETBIT" => self.execute_bitmaps_command(command, args).await,
             command => Ok(RedisValue::Error(format!("Err unknown command '{}'", command)).encode()),
         }
     }

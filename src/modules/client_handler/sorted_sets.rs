@@ -124,7 +124,7 @@ impl ClientHandler {
                         && let DbRecord::SortedSet(set) = record
                         && let Some(member) = set.get(&member_name)
                     {
-                        RedisValue::String(format!("{}", member.get_score())).encode()
+                        RedisValue::String(format!("{}", member.get_score()).as_bytes().to_vec()).encode()
                     } else {
                         RedisValue::NullString.encode()
                     }
