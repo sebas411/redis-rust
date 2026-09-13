@@ -84,6 +84,27 @@ impl ClientHandler {
                     RedisValue::Int(response).encode()
                 }
             },
+            "STRLEN" => {
+                if args.len() != 2 {
+                    RedisValue::Error(
+                        "Err wrong number of arguments for 'STRLEN' command".to_string(),
+                    )
+                    .encode()
+                } else {
+                    let key = args[1].clone().get_string()?;
+                    let mut length = 0;
+                    
+                    match self.db.read().await.get(&key) {
+                        Some(DbRecord::String(s_record)) => {
+                            if let RedisValue::String(raw) = s_record.get_value() {
+                                length = raw.len();
+                            }
+                        },
+                        _ => ()
+                    }
+                    RedisValue::Int(length as i64).encode()
+                }
+            },
             _ => unreachable!("command routed to the wrong handler: {command}"),
         };
         Ok(response)
