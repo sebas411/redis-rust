@@ -174,7 +174,11 @@ impl ClientHandler {
                         for j in 0..8 {
                             let mask = 1u8<<(7-j);
                             if op.to_ascii_uppercase() == "AND" {
-                                if (b1 & b2 & mask) > 0 {
+                                if b1 & b2 & mask > 0 {
+                                    dest_b |= mask;
+                                }
+                            } else if op.to_ascii_uppercase() == "OR" {
+                                if (b1 | b2) & mask > 0 {
                                     dest_b |= mask;
                                 }
                             }
