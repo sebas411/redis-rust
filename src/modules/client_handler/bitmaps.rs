@@ -170,18 +170,13 @@ impl ClientHandler {
                     for i in 0..max(bitmap1.len(), bitmap2.len()) {
                         let b1 = bitmap1.get(i).unwrap_or(&0);
                         let b2 = bitmap2.get(i).unwrap_or(&0);
-                        let mut dest_b = 0;
-                        for j in 0..8 {
-                            let mask = 1u8<<(7-j);
-                            if op.to_ascii_uppercase() == "AND" {
-                                if b1 & b2 & mask > 0 {
-                                    dest_b |= mask;
-                                }
-                            } else if op.to_ascii_uppercase() == "OR" {
-                                if (b1 | b2) & mask > 0 {
-                                    dest_b |= mask;
-                                }
-                            }
+                        let dest_b;
+                        if op.to_ascii_uppercase() == "AND" {
+                            dest_b = b1 & b2;
+                        } else if op.to_ascii_uppercase() == "OR" {
+                            dest_b = b1 | b2;
+                        } else {
+                            dest_b = 0;
                         }
                         dest_bitmap.push(dest_b);
                     }
