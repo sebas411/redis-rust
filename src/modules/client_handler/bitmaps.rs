@@ -159,9 +159,10 @@ impl ClientHandler {
                     let mut dest_bitmap = vec![];
                     
                     // get both bitmaps
-                    if let Some(DbRecord::String(s_record1))  = self.db.read().await.get(&key1) && let Some(DbRecord::String(s_record2)) = self.db.read().await.get(&key2)
-                        && let RedisValue::String(bm1) = s_record1.get_value() && let RedisValue::String(bm2) = s_record2.get_value() {
+                    if let Some(DbRecord::String(s_record1)) = self.db.read().await.get(&key1) && let RedisValue::String(bm1) = s_record1.get_value() {
                             bitmap1 = bm1.clone();
+                    }
+                    if let Some(DbRecord::String(s_record2)) = self.db.read().await.get(&key2) && let RedisValue::String(bm2) = s_record2.get_value() {
                             bitmap2 = bm2.clone();
                     }
                     
@@ -173,7 +174,7 @@ impl ClientHandler {
                         for j in 0..8 {
                             let mask = 1u8<<(7-j);
                             if op.to_ascii_uppercase() == "AND" {
-                                if b1 & b2 & mask > 1 {
+                                if (b1 & b2 & mask) > 0 {
                                     dest_b |= mask;
                                 }
                             }
