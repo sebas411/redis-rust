@@ -143,6 +143,51 @@ impl ClientHandler {
                     RedisValue::Int(total_bits as i64).encode()
                 }
             },
+            "BITOP" => {
+                if args.len() != 5 {
+                    RedisValue::Error(
+                        "Err wrong number of arguments for 'BITOP' command".to_string(),
+                    )
+                    .encode()
+                } else {
+                    let op = args[1].clone().get_string()?;
+                    let dest_key = args[2].clone().get_string()?;
+                    let key1 = args[3].clone().get_string()?;
+                    let key2 = args[4].clone().get_string()?;
+                    let mut bitmap1 = vec![];
+                    let mut bitmap2 = vec![];
+                    let mut dest_bitmap = vec![];
+                    
+                    // get both bitmaps
+                    if let Some(DbRecord::String(s_record1))  = self.db.read().await.get(&key1) && let Some(DbRecord::String(s_record2)) = self.db.read().await.get(&key2)
+                        && let RedisValue::String(bm1) = s_record1.get_value() && let RedisValue::String(bm2) = s_record2.get_value() {
+                            bitmap1 = bm1.clone();
+                            bitmap2 = bm2.clone();
+                    }
+                    
+                    // process said bitmaps
+                    for i in 0..max(bitmap1.len(), bitmap2.len()) {
+                        let b1 = bitmap1.get(i).unwrap_or(&0);
+                        let b2 = bitmap2.get(i).unwrap_or(&0);
+                        let mut dest_b = 0;
+                        for j in 0..8 {
+                            let mask = 1u8<<(7-j);
+                            if op.to_ascii_uppercase() == "AND" {
+                                if b1 & b2 & mask > 1 {
+                                    dest_b |= mask;
+                                }
+                            }
+                        }
+                        dest_bitmap.push(dest_b);
+                    }
+
+                    // set response and write dest bitmap
+                    let total_bytes = dest_bitmap.len();
+                    let mut write_db = self.db.write().await;
+                    write_db.insert(dest_key, DbRecord::String(StringRecord::new(RedisValue::String(dest_bitmap))));
+                    RedisValue::Int(total_bytes as i64).encode()
+                }
+            },
             _ => unreachable!("command routed to the wrong handler: {command}"),
         };
         Ok(response)
